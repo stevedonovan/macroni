@@ -1,0 +1,10 @@
+[package]
+name = "role-client"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+role-api = { path = "../api", features = ["client"] }
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
+

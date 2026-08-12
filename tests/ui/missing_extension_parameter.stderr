@@ -1,0 +1,5 @@
+error: extension parameter `auth` has no matching function parameter
+ --> tests/ui/missing_extension_parameter.rs:7:14
+  |
+7 |     async fn value(&self) -> macroni::Result<()>;
+  |              ^^^^^

@@ -1,0 +1,5 @@
+error: generic API methods are not supported
+ --> tests/ui/generic_method.rs:6:19
+  |
+6 |     async fn value<T>(&self, value: T) -> macroni::Result<()>;
+  |                   ^

@@ -1,0 +1,5 @@
+error: API methods must return `Result<T>`
+ --> tests/ui/non_result.rs:6:30
+  |
+6 |     async fn value(&self) -> String;
+  |                              ^^^^^^

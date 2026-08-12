@@ -1,0 +1,5 @@
+error: path parameter `name` has no matching function parameter
+ --> tests/ui/missing_path_parameter.rs:5:11
+  |
+5 |     #[get("/value/{name}")]
+  |           ^^^^^^^^^^^^^^^
