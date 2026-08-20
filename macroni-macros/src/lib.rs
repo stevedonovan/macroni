@@ -2,21 +2,66 @@ use heck::{ToSnakeCase, ToUpperCamelCase};
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
-    AngleBracketedGenericArguments, Attribute, FnArg, GenericArgument, Ident, ItemTrait, LitStr,
-    MetaNameValue, Pat, PathArguments, ReturnType, Token, TraitItem, TraitItemFn, Type,
-    parse::Parser, parse_macro_input, punctuated::Punctuated, spanned::Spanned,
+    AngleBracketedGenericArguments, Attribute, FnArg, GenericArgument, Ident, ImplItem, Item,
+    ItemImpl, ItemTrait, LitStr, MetaNameValue, Pat, PathArguments, PathSegment, ReturnType,
+    Signature, Token, TraitItem, Type, Visibility, parse::Parser, parse_macro_input,
+    punctuated::Punctuated, spanned::Spanned,
 };
 
 #[proc_macro_attribute]
 pub fn api(arguments: TokenStream, input: TokenStream) -> TokenStream {
-    let mut trait_item = parse_macro_input!(input as ItemTrait);
-    let config = match Config::parse(arguments) {
-        Ok(config) => config,
-        Err(error) => return error.into_compile_error().into(),
-    };
-    match expand(&mut trait_item, &config) {
-        Ok(output) => output.into(),
-        Err(error) => error.into_compile_error().into(),
+    let item = parse_macro_input!(input as Item);
+    match item {
+        Item::Impl(mut impl_item) => {
+            let config = Config::default();
+            // impl_item.
+            let struct_name = match type_at_end_of_path(&impl_item.self_ty) {
+                Ok(seq) => seq.ident.clone(),
+                Err(err) => return err.into_compile_error().into(),
+            };
+            let visibility = Visibility::Public(syn::token::Pub::default());
+            let methods = match get_impl_methods(&mut impl_item) {
+                Ok(methods) => methods,
+                Err(error) => return error.into_compile_error().into(),
+            };
+            let item = quote! { #impl_item };
+            match expand(item, &config, struct_name, visibility, methods, true) {
+                Ok(output) => output.into(),
+                Err(error) => error.into_compile_error().into(),
+            }
+        }
+        Item::Trait(mut trait_item) => {
+            let config = match Config::parse(arguments) {
+                Ok(config) => config,
+                Err(error) => return error.into_compile_error().into(),
+            };
+
+            if !trait_item.generics.params.is_empty() {
+                return syn::Error::new(
+                    trait_item.generics.span(),
+                    "generic API traits are not supported",
+                )
+                .into_compile_error()
+                .into();
+            }
+            let trait_name = trait_item.ident.clone();
+            let visibility = trait_item.vis.clone();
+            let methods = match get_trait_methods(&mut trait_item) {
+                Ok(methods) => methods,
+                Err(error) => return error.into_compile_error().into(),
+            };
+            let item = quote! { #trait_item };
+            match expand(item, &config, trait_name, visibility, methods, false) {
+                Ok(output) => output.into(),
+                Err(error) => error.into_compile_error().into(),
+            }
+        }
+        _ => syn::Error::new(
+            item.span(),
+            "api macro only defined on traits and impl blocks",
+        )
+        .into_compile_error()
+        .into(),
     }
 }
 
@@ -103,26 +148,250 @@ struct Method {
     result_type: Type,
 }
 
-fn expand(trait_item: &mut ItemTrait, config: &Config) -> syn::Result<proc_macro2::TokenStream> {
-    if !trait_item.generics.params.is_empty() {
-        return Err(syn::Error::new(
-            trait_item.generics.span(),
-            "generic API traits are not supported",
-        ));
-    }
-
-    let trait_name = trait_item.ident.clone();
-    let visibility = trait_item.vis.clone();
+fn expand(
+    item: proc_macro2::TokenStream,
+    config: &Config,
+    trait_name: Ident,
+    visibility: Visibility,
+    methods: Vec<Method>,
+    was_impl: bool,
+) -> syn::Result<proc_macro2::TokenStream> {
     let client_name = format_ident!("{}Client", trait_name);
     let client_builder_name = format_ident!("{}ClientBuilder", trait_name);
     let server_name = format_ident!("{}Server", trait_name);
     let module_name = format_ident!("__macroni_{}", trait_name.to_string().to_snake_case());
     let client_cfg = feature_cfg(config.client_feature.as_ref());
     let server_cfg = feature_cfg(config.server_feature.as_ref());
+    // the custom serializable structs containing the parameters are needed for both client and server
     let transport_cfg = either_feature_cfg(
         config.client_feature.as_ref(),
         config.server_feature.as_ref(),
     );
+
+    let client_methods = methods.iter().map(generate_client_method);
+    let client_convenience_methods = methods
+        .iter()
+        .filter_map(|method| generate_client_convenience_method(method, &visibility));
+    let handler_items = methods
+        .iter()
+        .map(|method| generate_handler(&trait_name, method, &server_cfg, &transport_cfg, was_impl));
+    let routes = methods.iter().map(|m| generate_route(m, was_impl));
+
+    let client_impl = if !was_impl {
+        quote! {
+                #client_cfg
+                #[derive(Clone, Debug)]
+                #visibility struct #client_name {
+                    base_url: ::macroni::__private::reqwest::Url,
+                    http: ::macroni::__private::reqwest::Client,
+                    max_response_bytes: usize,
+                }
+
+                #client_cfg
+                impl #client_name {
+                    #visibility fn new(base_url: impl ::core::convert::AsRef<str>)
+                        -> ::macroni::Result<Self>
+                    {
+                        Self::builder(base_url)?.build()
+                    }
+
+                    #visibility fn builder(base_url: impl ::core::convert::AsRef<str>)
+                        -> ::macroni::Result<#client_builder_name>
+                    {
+                        #client_builder_name::new(base_url)
+                    }
+
+                    #visibility fn with_http_client(
+                        base_url: impl ::core::convert::AsRef<str>,
+                        http: ::macroni::__private::reqwest::Client,
+                    ) -> ::macroni::Result<Self> {
+                        let base_url = ::macroni::__private::reqwest::Url::parse(base_url.as_ref())
+                            .map_err(|error| ::macroni::Error::protocol(
+                                None,
+                                ::std::format!("invalid API base URL: {error}"),
+                                None,
+                            ))?;
+                        Ok(Self {
+                            base_url,
+                            http,
+                            max_response_bytes: 8 * 1024 * 1024,
+                        })
+                    }
+
+                    #(#client_convenience_methods)*
+                }
+
+                #client_cfg
+                #visibility struct #client_builder_name {
+                    base_url: ::macroni::__private::reqwest::Url,
+                    http: ::macroni::__private::reqwest::ClientBuilder,
+                    default_headers: ::macroni::__private::reqwest::header::HeaderMap,
+                    max_response_bytes: usize,
+                }
+
+                #client_cfg
+                impl #client_builder_name {
+                    fn new(base_url: impl ::core::convert::AsRef<str>) -> ::macroni::Result<Self> {
+                        let base_url = ::macroni::__private::reqwest::Url::parse(base_url.as_ref())
+                            .map_err(|error| ::macroni::Error::protocol(
+                                None,
+                                ::std::format!("invalid API base URL: {error}"),
+                                None,
+                            ))?;
+                        if !matches!(base_url.scheme(), "http" | "https") || base_url.cannot_be_a_base() {
+                            return Err(::macroni::Error::protocol(
+                                None,
+                                "API base URL must be an absolute HTTP or HTTPS URL",
+                                None,
+                            ));
+                        }
+                        Ok(Self {
+                            base_url,
+                            http: ::macroni::__private::reqwest::Client::builder()
+                                .timeout(::std::time::Duration::from_secs(10))
+                                .connect_timeout(::std::time::Duration::from_secs(2)),
+                            default_headers: ::macroni::__private::reqwest::header::HeaderMap::new(),
+                            max_response_bytes: 8 * 1024 * 1024,
+                        })
+                    }
+
+                    #visibility fn timeout(mut self, timeout: ::std::time::Duration) -> Self {
+                        self.http = self.http.timeout(timeout);
+                        self
+                    }
+
+                    #visibility fn connect_timeout(mut self, timeout: ::std::time::Duration) -> Self {
+                        self.http = self.http.connect_timeout(timeout);
+                        self
+                    }
+
+                    #visibility fn default_headers(
+                        mut self,
+                        headers: ::macroni::__private::reqwest::header::HeaderMap,
+                    ) -> Self {
+                        self.default_headers.extend(headers);
+                        self
+                    }
+
+                    #visibility fn authorization(
+                        mut self,
+                        mut value: ::macroni::__private::reqwest::header::HeaderValue,
+                    ) -> Self {
+                        value.set_sensitive(true);
+                        self.default_headers.insert(
+                            ::macroni::__private::reqwest::header::AUTHORIZATION,
+                            value,
+                        );
+                        self
+                    }
+
+                    #visibility fn bearer_token(
+                        self,
+                        token: impl ::core::convert::AsRef<str>,
+                    ) -> ::macroni::Result<Self> {
+                        let value = ::macroni::__private::reqwest::header::HeaderValue::from_str(
+                            &::std::format!("Bearer {}", token.as_ref()),
+                        ).map_err(|error| ::macroni::Error::protocol(
+                            None,
+                            ::std::format!("invalid bearer token: {error}"),
+                            None,
+                        ))?;
+                        Ok(self.authorization(value))
+                    }
+
+                    #visibility fn response_body_limit(mut self, max_bytes: usize) -> Self {
+                        self.max_response_bytes = max_bytes;
+                        self
+                    }
+
+                    #visibility fn build(self) -> ::macroni::Result<#client_name> {
+                        let http = self.http
+                            .default_headers(self.default_headers)
+                            .build()
+                            .map_err(::macroni::Error::from)?;
+                        Ok(#client_name {
+                            base_url: self.base_url,
+                            http,
+                            max_response_bytes: self.max_response_bytes,
+                        })
+                    }
+                }
+
+                #client_cfg
+                impl super::#trait_name for #client_name {
+                    #(#client_methods)*
+                }
+
+
+        }
+    } else {
+        quote! {}
+    };
+
+    let router = if was_impl {
+        // this is a pure implementation on a plain impl block (server)
+        let struct_name = trait_name.clone();
+        quote! {
+            pub fn router(implementation: ::std::sync::Arc<#struct_name>)
+              -> ::macroni::__private::axum::Router
+            {
+                ::macroni::__private::axum::Router::new()
+                #(#routes)*
+                .with_state(implementation)
+            }
+        }
+    } else {
+        // this is a trait-based implementation (client and/or server)
+        quote! {
+            #visibility fn router<T>(implementation: ::std::sync::Arc<T>)
+              -> ::macroni::__private::axum::Router
+            where
+                T: super::#trait_name + Send + Sync + 'static,
+            {
+                ::macroni::__private::axum::Router::new()
+                #(#routes)*
+                .with_state(implementation)
+            }
+        }
+    };
+
+    let client_builder_export = if was_impl {
+        quote! {}
+    } else {
+        quote! {
+        #client_cfg
+        #visibility use #module_name::{#client_builder_name, #client_name};
+        }
+    };
+
+    Ok(quote! {
+        #item
+
+        #[doc(hidden)]
+        mod #module_name {
+            use super::*;
+
+            #client_impl
+
+            #server_cfg
+            #visibility struct #server_name;
+
+            #server_cfg
+            impl #server_name {
+                #router
+            }
+
+            #(#handler_items)*
+        }
+
+        #client_builder_export
+
+        #server_cfg
+        #visibility use #module_name::#server_name;
+    })
+}
+
+fn get_trait_methods(trait_item: &mut ItemTrait) -> syn::Result<Vec<Method>> {
     let mut methods = Vec::new();
 
     for item in &mut trait_item.items {
@@ -132,192 +401,33 @@ fn expand(trait_item: &mut ItemTrait, config: &Config) -> syn::Result<proc_macro
                 "API traits may contain methods only",
             ));
         };
-        methods.push(parse_method(function)?);
-    }
-
-    let client_methods = methods.iter().map(generate_client_method);
-    let client_convenience_methods = methods
-        .iter()
-        .filter_map(|method| generate_client_convenience_method(method, &visibility));
-    let handler_items = methods
-        .iter()
-        .map(|method| generate_handler(&trait_name, method, &server_cfg, &transport_cfg));
-    let routes = methods.iter().map(generate_route);
-
-    Ok(quote! {
-        #trait_item
-
-        #[doc(hidden)]
-        mod #module_name {
-            use super::*;
-
-            #client_cfg
-            #[derive(Clone, Debug)]
-            #visibility struct #client_name {
-                base_url: ::macroni::__private::reqwest::Url,
-                http: ::macroni::__private::reqwest::Client,
-                max_response_bytes: usize,
-            }
-
-            #client_cfg
-            impl #client_name {
-                #visibility fn new(base_url: impl ::core::convert::AsRef<str>)
-                    -> ::macroni::Result<Self>
-                {
-                    Self::builder(base_url)?.build()
-                }
-
-                #visibility fn builder(base_url: impl ::core::convert::AsRef<str>)
-                    -> ::macroni::Result<#client_builder_name>
-                {
-                    #client_builder_name::new(base_url)
-                }
-
-                #visibility fn with_http_client(
-                    base_url: impl ::core::convert::AsRef<str>,
-                    http: ::macroni::__private::reqwest::Client,
-                ) -> ::macroni::Result<Self> {
-                    let base_url = ::macroni::__private::reqwest::Url::parse(base_url.as_ref())
-                        .map_err(|error| ::macroni::Error::protocol(
-                            None,
-                            ::std::format!("invalid API base URL: {error}"),
-                            None,
-                        ))?;
-                    Ok(Self {
-                        base_url,
-                        http,
-                        max_response_bytes: 8 * 1024 * 1024,
-                    })
-                }
-
-                #(#client_convenience_methods)*
-            }
-
-            #client_cfg
-            #visibility struct #client_builder_name {
-                base_url: ::macroni::__private::reqwest::Url,
-                http: ::macroni::__private::reqwest::ClientBuilder,
-                default_headers: ::macroni::__private::reqwest::header::HeaderMap,
-                max_response_bytes: usize,
-            }
-
-            #client_cfg
-            impl #client_builder_name {
-                fn new(base_url: impl ::core::convert::AsRef<str>) -> ::macroni::Result<Self> {
-                    let base_url = ::macroni::__private::reqwest::Url::parse(base_url.as_ref())
-                        .map_err(|error| ::macroni::Error::protocol(
-                            None,
-                            ::std::format!("invalid API base URL: {error}"),
-                            None,
-                        ))?;
-                    if !matches!(base_url.scheme(), "http" | "https") || base_url.cannot_be_a_base() {
-                        return Err(::macroni::Error::protocol(
-                            None,
-                            "API base URL must be an absolute HTTP or HTTPS URL",
-                            None,
-                        ));
-                    }
-                    Ok(Self {
-                        base_url,
-                        http: ::macroni::__private::reqwest::Client::builder()
-                            .timeout(::std::time::Duration::from_secs(10))
-                            .connect_timeout(::std::time::Duration::from_secs(2)),
-                        default_headers: ::macroni::__private::reqwest::header::HeaderMap::new(),
-                        max_response_bytes: 8 * 1024 * 1024,
-                    })
-                }
-
-                #visibility fn timeout(mut self, timeout: ::std::time::Duration) -> Self {
-                    self.http = self.http.timeout(timeout);
-                    self
-                }
-
-                #visibility fn connect_timeout(mut self, timeout: ::std::time::Duration) -> Self {
-                    self.http = self.http.connect_timeout(timeout);
-                    self
-                }
-
-                #visibility fn default_headers(
-                    mut self,
-                    headers: ::macroni::__private::reqwest::header::HeaderMap,
-                ) -> Self {
-                    self.default_headers.extend(headers);
-                    self
-                }
-
-                #visibility fn authorization(
-                    mut self,
-                    mut value: ::macroni::__private::reqwest::header::HeaderValue,
-                ) -> Self {
-                    value.set_sensitive(true);
-                    self.default_headers.insert(
-                        ::macroni::__private::reqwest::header::AUTHORIZATION,
-                        value,
-                    );
-                    self
-                }
-
-                #visibility fn bearer_token(
-                    self,
-                    token: impl ::core::convert::AsRef<str>,
-                ) -> ::macroni::Result<Self> {
-                    let value = ::macroni::__private::reqwest::header::HeaderValue::from_str(
-                        &::std::format!("Bearer {}", token.as_ref()),
-                    ).map_err(|error| ::macroni::Error::protocol(
-                        None,
-                        ::std::format!("invalid bearer token: {error}"),
-                        None,
-                    ))?;
-                    Ok(self.authorization(value))
-                }
-
-                #visibility fn response_body_limit(mut self, max_bytes: usize) -> Self {
-                    self.max_response_bytes = max_bytes;
-                    self
-                }
-
-                #visibility fn build(self) -> ::macroni::Result<#client_name> {
-                    let http = self.http
-                        .default_headers(self.default_headers)
-                        .build()
-                        .map_err(::macroni::Error::from)?;
-                    Ok(#client_name {
-                        base_url: self.base_url,
-                        http,
-                        max_response_bytes: self.max_response_bytes,
-                    })
-                }
-            }
-
-            #client_cfg
-            impl super::#trait_name for #client_name {
-                #(#client_methods)*
-            }
-
-            #server_cfg
-            #visibility struct #server_name;
-
-            #server_cfg
-            impl #server_name {
-                #visibility fn router<T>(implementation: ::std::sync::Arc<T>)
-                    -> ::macroni::__private::axum::Router
-                where
-                    T: super::#trait_name + Send + Sync + 'static,
-                {
-                    ::macroni::__private::axum::Router::new()
-                        #(#routes)*
-                        .with_state(implementation)
-                }
-            }
-
-            #(#handler_items)*
+        if function.default.is_some() {
+            return Err(syn::Error::new(
+                function.span(),
+                "default API method implementations are not supported",
+            ));
         }
+        methods.push(parse_method(&mut function.sig, &mut function.attrs, true)?);
+    }
+    Ok(methods)
+}
 
-        #client_cfg
-        #visibility use #module_name::{#client_builder_name, #client_name};
-        #server_cfg
-        #visibility use #module_name::#server_name;
-    })
+fn get_impl_methods(impl_item: &mut ItemImpl) -> syn::Result<Vec<Method>> {
+    let mut methods = Vec::new();
+    for item in &mut impl_item.items {
+        match item {
+            ImplItem::Fn(function) => {
+                methods.push(parse_method(&mut function.sig, &mut function.attrs, false)?);
+            }
+            _ => {
+                return Err(syn::Error::new(
+                    impl_item.span(),
+                    "only impl block methods are supported",
+                ));
+            }
+        }
+    }
+    Ok(methods)
 }
 
 fn feature_cfg(feature: Option<&LitStr>) -> proc_macro2::TokenStream {
@@ -337,36 +447,34 @@ fn either_feature_cfg(
     }
 }
 
-fn parse_method(function: &mut TraitItemFn) -> syn::Result<Method> {
-    if function.default.is_some() {
+fn parse_method(
+    sig: &mut Signature,
+    attrs: &mut Vec<Attribute>,
+    was_trait: bool,
+) -> syn::Result<Method> {
+    if !sig.generics.params.is_empty() {
         return Err(syn::Error::new(
-            function.span(),
-            "default API method implementations are not supported",
-        ));
-    }
-    if !function.sig.generics.params.is_empty() {
-        return Err(syn::Error::new(
-            function.sig.generics.span(),
+            sig.generics.span(),
             "generic API methods are not supported",
         ));
     }
-    if function.sig.asyncness.is_none() {
+    if sig.asyncness.is_none() {
         return Err(syn::Error::new(
-            function.sig.fn_token.span(),
+            sig.fn_token.span(),
             "API methods must be async",
         ));
     }
 
-    let (verb, path) = take_route_attribute(&mut function.attrs)?;
-    let extension_names = take_extension_attributes(&mut function.attrs)?;
+    let (verb, path) = take_route_attribute(attrs)?;
+    let extension_names = take_extension_attributes(attrs)?;
     let path_names = placeholders(&path)?;
-    let mut inputs = function.sig.inputs.iter();
+    let mut inputs = sig.inputs.iter();
     match inputs.next() {
         Some(FnArg::Receiver(receiver))
             if receiver.reference.is_some() && receiver.mutability.is_none() => {}
         _ => {
             return Err(syn::Error::new(
-                function.sig.inputs.span(),
+                sig.inputs.span(),
                 "API methods must begin with an `&self` receiver",
             ));
         }
@@ -419,7 +527,7 @@ fn parse_method(function: &mut TraitItemFn) -> syn::Result<Method> {
             .find(|parameter| parameter.name == extension)
         else {
             return Err(syn::Error::new(
-                function.sig.ident.span(),
+                sig.ident.span(),
                 format!("extension parameter `{extension}` has no matching function parameter"),
             ));
         };
@@ -431,18 +539,20 @@ fn parse_method(function: &mut TraitItemFn) -> syn::Result<Method> {
         }
     }
 
-    let result_type = result_type(&function.sig.output)?;
-    let ReturnType::Type(_, declared_output) = &function.sig.output else {
+    let result_type = result_type(&sig.output)?;
+    let ReturnType::Type(_, declared_output) = &sig.output else {
         unreachable!("result_type validated the return type")
     };
-    let declared_output = declared_output.clone();
-    function.sig.asyncness = None;
-    function.sig.output = syn::parse_quote! {
-        -> impl ::core::future::Future<Output = #declared_output> + Send
-    };
+    if was_trait {
+        let declared_output = declared_output.clone();
+        sig.asyncness = None;
+        sig.output = syn::parse_quote! {
+            -> impl ::core::future::Future<Output = #declared_output> + Send
+        };
+    }
 
     Ok(Method {
-        name: function.sig.ident.clone(),
+        name: sig.ident.clone(),
         verb,
         path,
         parameters,
@@ -539,20 +649,24 @@ fn placeholders(path: &LitStr) -> syn::Result<Vec<String>> {
     Ok(names)
 }
 
+fn type_at_end_of_path(ty: &Box<Type>) -> syn::Result<&PathSegment> {
+    let Type::Path(type_path) = ty.as_ref() else {
+        return Err(syn::Error::new(ty.span(), "not a type path"));
+    };
+    let Some(segment) = type_path.path.segments.last() else {
+        return Err(syn::Error::new(ty.span(), "no last path segment found"));
+    };
+    Ok(segment)
+}
+
 fn result_type(output: &ReturnType) -> syn::Result<Type> {
     let ReturnType::Type(_, ty) = output else {
         return Err(syn::Error::new(
             output.span(),
-            "API methods must return `Result<T>`",
+            "API methods must return a type",
         ));
     };
-    let Type::Path(type_path) = ty.as_ref() else {
-        return Err(syn::Error::new(
-            ty.span(),
-            "API methods must return `Result<T>`",
-        ));
-    };
-    let Some(segment) = type_path.path.segments.last() else {
+    let Ok(segment) = type_at_end_of_path(ty) else {
         return Err(syn::Error::new(
             ty.span(),
             "API methods must return `Result<T>`",
@@ -617,7 +731,7 @@ fn generate_client_method(method: &Method) -> proc_macro2::TokenStream {
 
 fn generate_client_convenience_method(
     method: &Method,
-    visibility: &syn::Visibility,
+    visibility: &Visibility,
 ) -> Option<proc_macro2::TokenStream> {
     method.parameters.iter().any(|p| p.in_extension).then(|| {
         let name = &method.name;
@@ -642,6 +756,8 @@ fn generate_client_convenience_method(
 
 fn generate_client_request(method: &Method) -> proc_macro2::TokenStream {
     let result_type = &method.result_type;
+    // any path parameters are passed by replacing the placeholders (/path/{a}/{b})
+    // with the percent-encoded values
     let path_replacements = method
         .parameters
         .iter()
@@ -673,6 +789,8 @@ fn generate_client_request(method: &Method) -> proc_macro2::TokenStream {
         let name = &parameter.name;
         quote!(#name)
     });
+    // Note the conventions here: GET & DELETE get via query, the rest via body.
+    // We are using the generated structs to marshall the payload fields.
     let request = match (method.verb, non_path.is_empty()) {
         (Verb::Get, true) => quote!(self.http.get(url)),
         (Verb::Get, false) => quote!({
@@ -724,11 +842,21 @@ fn generate_client_request(method: &Method) -> proc_macro2::TokenStream {
     }
 }
 
+// For each trait method, we are going to create an Axum handler which will call the method.
+// The handler will be passed:
+//  - the implementation as State
+//  - any Extract parameters
+//  - maybe a Path parameter
+//  - either Query or Json parameter depending on whether we are GET or POST, etc
+// The original formal parameters are grouped together in synthesized ser/de structs,
+// so e.g. we will have handler parameters like `Query(Ty{name,id}): Query<Ty>`
+// where `Ty` is the synthesized struct name.
 fn generate_handler(
     trait_name: &Ident,
     method: &Method,
     server_cfg: &proc_macro2::TokenStream,
     transport_cfg: &proc_macro2::TokenStream,
+    was_impl: bool,
 ) -> proc_macro2::TokenStream {
     let handler_name = format_ident!("__handle_{}", method.name);
     let result_type = &method.result_type;
@@ -778,28 +906,53 @@ fn generate_handler(
     let call_arguments = method.parameters.iter().map(|parameter| &parameter.name);
     let method_name = &method.name;
 
-    quote! {
-        #derive_path
-        #derive_payload
+    let handler = if was_impl {
+        // server-only handler implemented directly on the impl block
+        let struct_name = trait_name;
+        quote! {
+        async fn #handler_name(
+            ::macroni::__private::axum::extract::State(implementation):
+                ::macroni::__private::axum::extract::State<::std::sync::Arc<#struct_name>>,
+            #path_extractor
+            #(#extension_extractors)*
+            #payload_extractor
+        ) -> ::macroni::Result<::macroni::__private::axum::Json<#result_type>>
+        {
+            let result = implementation.#method_name(#(#call_arguments),*).await?;
+            Ok(::macroni::__private::axum::Json(result))
+        }
 
-        #server_cfg
-        async fn #handler_name<T>(
+        }
+    } else {
+        // and this handler is generic for any implementation of the trait (client and/or server)
+        quote! {
+        async fn #handler_name <T> (
             ::macroni::__private::axum::extract::State(implementation):
                 ::macroni::__private::axum::extract::State<::std::sync::Arc<T>>,
             #path_extractor
             #(#extension_extractors)*
             #payload_extractor
         ) -> ::macroni::Result<::macroni::__private::axum::Json<#result_type>>
-        where
-            T: super::#trait_name + Send + Sync + 'static,
+            where
+                T: super::#trait_name + Send + Sync + 'static,
         {
             use super::#trait_name as _;
             let result = implementation.#method_name(#(#call_arguments),*).await?;
             Ok(::macroni::__private::axum::Json(result))
         }
+
+        }
+    };
+
+    quote! {
+        #derive_path
+        #derive_payload
+
+        #server_cfg
+        #handler
     }
 }
-
+// we wrap method parameters into custom structs
 fn struct_definition(
     name: &Ident,
     parameters: &[&Parameter],
@@ -830,22 +983,29 @@ fn struct_definition(
     }
 }
 
-fn generate_route(method: &Method) -> proc_macro2::TokenStream {
+fn generate_route(method: &Method, use_impl: bool) -> proc_macro2::TokenStream {
     let path = &method.path;
     let handler = format_ident!("__handle_{}", method.name);
+    let generic = if use_impl {
+        quote! {}
+    } else {
+        quote!( ::<T> )
+    };
     match method.verb {
-        Verb::Get => quote!(.route(#path, ::macroni::__private::axum::routing::get(#handler::<T>))),
+        Verb::Get => {
+            quote!(.route(#path, ::macroni::__private::axum::routing::get(#handler #generic)))
+        }
         Verb::Post => {
-            quote!(.route(#path, ::macroni::__private::axum::routing::post(#handler::<T>)))
+            quote!(.route(#path, ::macroni::__private::axum::routing::post(#handler #generic)))
         }
         Verb::Put => {
-            quote!(.route(#path, ::macroni::__private::axum::routing::put(#handler::<T>)))
+            quote!(.route(#path, ::macroni::__private::axum::routing::put(#handler #generic)))
         }
         Verb::Patch => {
-            quote!(.route(#path, ::macroni::__private::axum::routing::patch(#handler::<T>)))
+            quote!(.route(#path, ::macroni::__private::axum::routing::patch(#handler #generic)))
         }
         Verb::Delete => {
-            quote!(.route(#path, ::macroni::__private::axum::routing::delete(#handler::<T>)))
+            quote!(.route(#path, ::macroni::__private::axum::routing::delete(#handler #generic)))
         }
     }
 }
