@@ -9,6 +9,8 @@ use std::fmt::{self, Display};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// `ErrorResponse` is the form of the error that is passed as a response, together with
+/// the status code
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ErrorResponse {
     pub code: String,
@@ -17,6 +19,10 @@ pub struct ErrorResponse {
     pub details: Option<Value>,
 }
 
+/// `Error` distinguishes between user errors, server errors, transport errors
+/// and protocol errors.
+/// On the client side, Reqwest errors become transport errors,
+/// and on the server side, errors can be converted into responses
 #[derive(Debug)]
 pub enum Error {
     User {

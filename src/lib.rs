@@ -11,6 +11,8 @@ pub mod server;
 pub use error::{Error, ErrorResponse, Result};
 pub use http::StatusCode;
 pub use macroni_macros::api;
+pub use serde;
+pub use serde_json;
 
 #[doc(hidden)]
 pub mod __private {

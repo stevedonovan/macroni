@@ -8,15 +8,16 @@ use std::time::Duration;
 
 /// Apply with `axum::middleware::from_fn_with_state(duration, timeout)`.
 pub async fn timeout(State(duration): State<Duration>, request: Request, next: Next) -> Response {
-    match tokio::time::timeout(duration, next.run(request)).await {
-        Ok(response) => response,
-        Err(_) => Error::user(
-            http::StatusCode::GATEWAY_TIMEOUT,
-            "request_timeout",
-            "The request exceeded its deadline",
-        )
-        .into_response(),
-    }
+    tokio::time::timeout(duration, next.run(request))
+        .await
+        .unwrap_or_else(|_| {
+            Error::user(
+                http::StatusCode::GATEWAY_TIMEOUT,
+                "request_timeout",
+                "The request exceeded its deadline",
+            )
+            .into_response()
+        })
 }
 
 /// Configure Axum's request body limit. Extractor failures remain JSON responses.
