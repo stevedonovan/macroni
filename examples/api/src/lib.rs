@@ -28,4 +28,7 @@ pub trait RoleApi {
     #[get("/whoami")]
     #[extension(auth)]
     async fn who_am_i(&self, auth: AuthenticatedUser) -> Result<String>;
+
+    #[get("/slow/{id}")]
+    async fn slow(&self, id: String) -> Result<String>;
 }

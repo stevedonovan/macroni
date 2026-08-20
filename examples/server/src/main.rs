@@ -1,9 +1,11 @@
-use axum::response::IntoResponse;
+use axum::extract::Request;
+use axum::response::{IntoResponse, Response};
+use axum::{http, middleware};
 use role_api::{AuthenticatedUser, Error, Result, Role, RoleApi, RoleApiServer};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
+use tower_http::request_id::{MakeRequestUuid, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
 
 #[derive(Default)]
@@ -53,6 +55,11 @@ impl RoleApi for RoleService {
     async fn who_am_i(&self, auth: AuthenticatedUser) -> Result<String> {
         Ok(auth.user_id)
     }
+
+    async fn slow(&self, id: String) -> Result<String> {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        Ok(id)
+    }
 }
 
 #[tokio::main]
@@ -66,14 +73,14 @@ async fn main() {
 
     let app = RoleApiServer::router(Arc::new(RoleService::default()))
         .layer(macroni::server::body_limit(1024 * 1024))
-        .layer(axum::middleware::from_fn_with_state(
-            Duration::from_secs(10),
-            macroni::server::timeout,
-        ))
-        .layer(PropagateRequestIdLayer::x_request_id())
+        // .layer(middleware::from_fn_with_state(
+        //     Duration::from_secs(10),
+        //     macroni::server::timeout,
+        // ))
+        // .layer(PropagateRequestIdLayer::x_request_id())
         .layer(TraceLayer::new_for_http())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
-        .layer(axum::middleware::from_fn(authenticate));
+        .layer(middleware::from_fn(authenticate));
     let address = std::env::var("ROLE_API_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into());
     let listener = tokio::net::TcpListener::bind(&address)
         .await
@@ -86,19 +93,16 @@ async fn main() {
         .expect("serve role API");
 }
 
-async fn authenticate(
-    mut request: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> axum::response::Response {
+async fn authenticate(mut request: Request, next: middleware::Next) -> Response {
     let authorized = request
         .headers()
-        .get(axum::http::header::AUTHORIZATION)
+        .get(http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         == Some("Bearer example-secret");
 
     if !authorized {
         return Error::user(
-            axum::http::StatusCode::UNAUTHORIZED,
+            http::StatusCode::UNAUTHORIZED,
             "unauthorized",
             "A valid bearer token is required",
         )

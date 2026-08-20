@@ -6,7 +6,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let address = std::env::var("ROLE_API_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into());
     let client = RoleApiClient::builder(format!("http://{address}"))?
         .connect_timeout(Duration::from_secs(2))
-        .timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(1))
         .bearer_token("example-secret")?
         .build()?;
     let role = Role {
