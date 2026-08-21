@@ -2,8 +2,9 @@
 
 ## Some Macro Magic
 
-[Axum](?) is a powerful and flexible Web framework by the Tokio team built
-on the lower-level [Hyper](?) library that can use middleware from the [Tower](?) project.
+[Axum](https://docs.rs/axum]df[) is a powerful and flexible Web framework by the Tokio team built
+on the lower-level [Hyper](https://docs.rs/hyper) library that can use middleware from
+the [Tower](https://docs.rs/tower) project.
 
 However, a non-trivial `Axum` project requires assembling features from different crates, and
 doing some customization, like making your error type support the `IntoResponse` trait, etc.
@@ -70,7 +71,7 @@ parameter is not explicitly from the path, then it comes from the query. Similar
 if not a path parameter, then it is assumed to be part of the JSON body. So the first method would be evoked as GET
 `http://localhost:3030/hello?name=Bilbo&age=111` and the POST route will want a body like `{"name":"Bilbo","age":111}`
 
-# Client _and_ Server Specified as a Trait
+## Client _and_ Server Specified as a Trait
 
 The original case I was envisaging was a Rust server, and a Rust client. In this case the macro `api` operates on an
 _async
