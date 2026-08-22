@@ -23,7 +23,7 @@ server = ["dep:axum", "dep:tokio", "dep:tracing"]
 anyhow = "1.0"
 axum = { version = "0.8", optional = true }
 http = "1"
-macroni-macros = { path = "macroni-macros" }
+macroni-macros = { version = "0.2.0", path = "macroni-macros" }
 percent-encoding = { version = "2.3", optional = true }
 reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
