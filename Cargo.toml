@@ -1,5 +1,7 @@
 [package]
 name = "macroni"
+description = "Macros for generating Axum handlers from async methods"
+license = "MIT"
 version = "0.2.0"
 edition = "2024"
 autobins = false
