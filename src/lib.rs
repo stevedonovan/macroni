@@ -93,11 +93,66 @@ mod extract;
 #[cfg(feature = "server")]
 pub mod server;
 
+#[cfg(feature = "server")]
+pub use axum;
 pub use error::{Error, ErrorResponse, Result};
 pub use http::StatusCode;
 pub use macroni_macros::api;
 pub use serde;
 pub use serde_json;
+use std::path::PathBuf;
+#[cfg(feature = "server")]
+pub use tokio;
+use tokio::net::UnixListener;
+
+/// A TCP listener
+#[cfg(feature = "server")]
+pub async fn tcp_listener(address: &str) -> std::io::Result<tokio::net::TcpListener> {
+    tokio::net::TcpListener::bind(&address).await
+}
+
+/// A Unix Domain Socket (UDS) listener
+#[cfg(feature = "server")]
+pub async fn unix_listener(socket_path: &str) -> std::io::Result<UnixListener> {
+    let socket_path = PathBuf::from(socket_path);
+    if socket_path.exists() {
+        let _ = tokio::fs::remove_file(&socket_path).await;
+    }
+
+    // Ensure the parent directory exists
+    if let Some(parent) = socket_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+
+    // Bind the Unix Domain Socket listener
+    UnixListener::bind(&socket_path)
+}
+
+/// a convenient macro for starting a default Axum server with either
+/// Unix Domain socket or regular TCP/IP address
+#[cfg(feature = "server")]
+#[macro_export]
+macro_rules! serve {
+    ($address:expr,$service:expr) => {
+        if $address.starts_with("/") {
+            let listener = $crate::unix_listener($address)
+                .await
+                .expect("unable to listen");
+            eprintln!("server listening on {}", $address);
+            $crate::axum::serve(listener, $service)
+                .await
+                .expect("unable to serve");
+        } else {
+            let listener = $crate::tcp_listener($address)
+                .await
+                .expect("unable to bind");
+            eprintln!("server listening on {}", $address);
+            $crate::axum::serve(listener, $service)
+                .await
+                .expect("unable to start server");
+        }
+    };
+}
 
 #[doc(hidden)]
 pub mod __private {

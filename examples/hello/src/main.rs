@@ -1,5 +1,6 @@
 use macroni::Result;
 use macroni::serde_json::{Value, json};
+use macroni::tokio;
 use std::sync::Arc;
 
 struct Implementation {
@@ -28,11 +29,7 @@ async fn main() {
         id: "Admin".to_owned(),
     }));
 
-    let address = std::env::var("HELLO_ADDR").unwrap_or_else(|_| "127.0.0.1:3030".into());
-    let listener = tokio::net::TcpListener::bind(&address)
-        .await
-        .expect("bind server listener");
+    let address = std::env::var("HELLO_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into());
 
-    println!("role server listening on http://{address}");
-    axum::serve(listener, server).await.unwrap();
+    macroni::serve!(&address, server);
 }
