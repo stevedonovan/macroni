@@ -9,6 +9,5 @@ server = []
 client = []
 
 [dependencies]
-axum = "0.8"
 macroni = { path = "../..", default-features = false, features = ["server"] }
-tokio = { version = "1.0", features = ["macros", "net", "rt-multi-thread", "signal"] }
+#tokio = { version = "1.0", features = ["macros", "net", "rt-multi-thread", "signal"] }
