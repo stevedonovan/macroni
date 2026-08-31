@@ -100,10 +100,8 @@ pub use http::StatusCode;
 pub use macroni_macros::api;
 pub use serde;
 pub use serde_json;
-use std::path::PathBuf;
 #[cfg(feature = "server")]
 pub use tokio;
-use tokio::net::UnixListener;
 
 /// A TCP listener
 #[cfg(feature = "server")]
@@ -113,8 +111,8 @@ pub async fn tcp_listener(address: &str) -> std::io::Result<tokio::net::TcpListe
 
 /// A Unix Domain Socket (UDS) listener
 #[cfg(feature = "server")]
-pub async fn unix_listener(socket_path: &str) -> std::io::Result<UnixListener> {
-    let socket_path = PathBuf::from(socket_path);
+pub async fn unix_listener(socket_path: &str) -> std::io::Result<tokio::net::UnixListener> {
+    let socket_path = std::path::PathBuf::from(socket_path);
     if socket_path.exists() {
         let _ = tokio::fs::remove_file(&socket_path).await;
     }
@@ -125,7 +123,7 @@ pub async fn unix_listener(socket_path: &str) -> std::io::Result<UnixListener> {
     }
 
     // Bind the Unix Domain Socket listener
-    UnixListener::bind(&socket_path)
+    tokio::net::UnixListener::bind(&socket_path)
 }
 
 /// a convenient macro for starting a default Axum server with either
