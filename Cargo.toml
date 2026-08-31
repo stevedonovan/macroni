@@ -11,7 +11,7 @@ members = [
     "macroni-macros",
     "examples/api",
     "examples/client",
-    "examples/server", "examples/hello",
+    "examples/server", "examples/hello", "examples/direct",
 ]
 
 [features]
