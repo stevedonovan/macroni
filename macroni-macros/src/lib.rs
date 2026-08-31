@@ -1,6 +1,6 @@
 use heck::{ToSnakeCase, ToUpperCamelCase};
 use proc_macro::TokenStream;
-use quote::{format_ident, quote};
+use quote::{ToTokens, format_ident, quote};
 use syn::{
     AngleBracketedGenericArguments, Attribute, FnArg, GenericArgument, Ident, ImplItem, Item,
     ItemImpl, ItemTrait, LitStr, MetaNameValue, Pat, PathArguments, PathSegment, ReturnType,
@@ -133,11 +133,24 @@ impl Verb {
     }
 }
 
+#[derive(PartialEq, Debug, Clone, Copy)]
+enum ParmKind {
+    Path,
+    Extension,
+    Struct,
+    Regular,
+}
+
+impl ParmKind {
+    fn non_path(self) -> bool {
+        self != ParmKind::Path && self != ParmKind::Extension
+    }
+}
+
 struct Parameter {
     name: Ident,
     ty: Type,
-    in_path: bool,
-    in_extension: bool,
+    kind: ParmKind,
 }
 
 struct Method {
@@ -466,7 +479,9 @@ fn parse_method(
     }
 
     let (verb, path) = take_route_attribute(attrs)?;
-    let extension_names = take_extension_attributes(attrs)?;
+    let extension_names = take_simple_attributes(attrs, "extension")?;
+    // there can only be one body struct
+    let body_name = take_simple_attributes(attrs, "body")?;
     let path_names = placeholders(&path)?;
     let mut inputs = sig.inputs.iter();
     match inputs.next() {
@@ -497,47 +512,44 @@ fn parse_method(
                 "API parameters must use simple identifier patterns",
             ));
         }
+        let pattern_name = pattern.ident.to_string();
         parameters.push(Parameter {
             name: pattern.ident.clone(),
             ty: (*argument.ty).clone(),
-            in_path: path_names
-                .iter()
-                .any(|name| name == &pattern.ident.to_string()),
-            in_extension: extension_names
-                .iter()
-                .any(|name| name == &pattern.ident.to_string()),
+            kind: if path_names.iter().any(|name| name == &pattern_name) {
+                ParmKind::Path
+            } else if extension_names.iter().any(|name| name == &pattern_name) {
+                ParmKind::Extension
+            } else if body_name.iter().any(|name| name == &pattern_name) {
+                ParmKind::Struct
+            } else {
+                ParmKind::Regular
+            },
         });
     }
 
-    for placeholder in &path_names {
-        if !parameters
-            .iter()
-            .any(|parameter| parameter.name == placeholder)
-        {
-            return Err(syn::Error::new(
-                path.span(),
-                format!("path parameter `{placeholder}` has no matching function parameter"),
-            ));
+    let check_matching = |path_names: &[String],
+                          span: proc_macro2::Span,
+                          kind: &str|
+     -> syn::Result<()> {
+        for placeholder in path_names.iter() {
+            if parameters
+                .iter()
+                .find(|parameter| parameter.name == placeholder)
+                .is_none()
+            {
+                return Err(syn::Error::new(
+                    span,
+                    format!("{kind} parameter `{placeholder}` has no matching function parameter"),
+                ));
+            };
         }
-    }
+        Ok(())
+    };
 
-    for extension in &extension_names {
-        let Some(parameter) = parameters
-            .iter()
-            .find(|parameter| parameter.name == extension)
-        else {
-            return Err(syn::Error::new(
-                sig.ident.span(),
-                format!("extension parameter `{extension}` has no matching function parameter"),
-            ));
-        };
-        if parameter.in_path {
-            return Err(syn::Error::new(
-                parameter.name.span(),
-                "a parameter cannot be both a path parameter and an extension",
-            ));
-        }
-    }
+    check_matching(&path_names, path.span(), "path")?;
+    check_matching(&extension_names, sig.ident.span(), "extension")?;
+    check_matching(&body_name, sig.ident.span(), "body")?;
 
     let result_type = result_type(&sig.output)?;
     let ReturnType::Type(_, declared_output) = &sig.output else {
@@ -560,28 +572,31 @@ fn parse_method(
     })
 }
 
-fn take_extension_attributes(attributes: &mut Vec<Attribute>) -> syn::Result<Vec<String>> {
-    let mut extensions = Vec::new();
+fn take_simple_attributes(
+    attributes: &mut Vec<Attribute>,
+    attrib_name: &str,
+) -> syn::Result<Vec<String>> {
+    let mut simple_attributes = Vec::new();
     let mut error = None;
     attributes.retain(|attribute| {
-        if !attribute.path().is_ident("extension") {
+        if !attribute.path().is_ident(attrib_name) {
             return true;
         }
         match attribute.parse_args::<Ident>() {
-            Ok(name) if extensions.contains(&name.to_string()) => {
+            Ok(name) if simple_attributes.contains(&name.to_string()) => {
                 error = Some(syn::Error::new(
                     name.span(),
-                    format!("duplicate extension parameter `{name}`"),
+                    format!("duplicate {attrib_name} parameter `{name}`"),
                 ));
             }
-            Ok(name) => extensions.push(name.to_string()),
+            Ok(name) => simple_attributes.push(name.to_string()),
             Err(parse_error) => error = Some(parse_error),
         }
         false
     });
     match error {
         Some(error) => Err(error),
-        None => Ok(extensions),
+        None => Ok(simple_attributes),
     }
 }
 
@@ -714,7 +729,7 @@ fn generate_client_method(method: &Method) -> proc_macro2::TokenStream {
     let ignored_extensions = method
         .parameters
         .iter()
-        .filter(|p| p.in_extension)
+        .filter(|p| p.kind == ParmKind::Extension)
         .map(|p| {
             let name = &p.name;
             quote!(let _ = #name;)
@@ -733,13 +748,13 @@ fn generate_client_convenience_method(
     method: &Method,
     visibility: &Visibility,
 ) -> Option<proc_macro2::TokenStream> {
-    method.parameters.iter().any(|p| p.in_extension).then(|| {
+    method.parameters.iter().any(|p| p.kind == ParmKind::Extension).then(|| {
         let name = &method.name;
         let result_type = &method.result_type;
         let arguments = method
             .parameters
             .iter()
-            .filter(|p| !p.in_extension)
+            .filter(|p| p.kind != ParmKind::Extension)
             .map(|parameter| {
                 let name = &parameter.name;
                 let ty = &parameter.ty;
@@ -761,7 +776,7 @@ fn generate_client_request(method: &Method) -> proc_macro2::TokenStream {
     let path_replacements = method
         .parameters
         .iter()
-        .filter(|p| p.in_path)
+        .filter(|p| p.kind == ParmKind::Path)
         .map(|parameter| {
             let name = &parameter.name;
             let placeholder = format!("{{{name}}}");
@@ -775,46 +790,64 @@ fn generate_client_request(method: &Method) -> proc_macro2::TokenStream {
     let non_path: Vec<_> = method
         .parameters
         .iter()
-        .filter(|p| !p.in_path && !p.in_extension)
+        .filter(|p| p.kind.non_path())
         .collect();
-    let payload_type = generated_type_name(
-        method,
-        if method.verb.uses_query() {
-            "Query"
-        } else {
-            "Body"
-        },
-    );
+    let has_struct = non_path.len() == 1 && non_path[0].kind == ParmKind::Struct;
+
+    let payload_type = if !has_struct {
+        generated_type_name(
+            method,
+            if method.verb.uses_query() {
+                "Query"
+            } else {
+                "Body"
+            },
+        )
+        .to_token_stream()
+    } else {
+        quote!()
+    };
     let payload_fields = non_path.iter().map(|parameter| {
         let name = &parameter.name;
         quote!(#name)
     });
+    let set_payload = if !has_struct {
+        // we use the generated struct containing all the passed parameters
+        quote! {
+              let payload = #payload_type { #(#payload_fields),* };
+        }
+    } else {
+        // there is exactly one 'struct' parameter
+        quote! {
+            let payload = #(#payload_fields),* ;
+        }
+    };
     // Note the conventions here: GET & DELETE get via query, the rest via body.
     // We are using the generated structs to marshall the payload fields.
     let request = match (method.verb, non_path.is_empty()) {
         (Verb::Get, true) => quote!(self.http.get(url)),
         (Verb::Get, false) => quote!({
-            let payload = #payload_type { #(#payload_fields),* };
+            #set_payload
             self.http.get(url).query(&payload)
         }),
         (Verb::Post, true) => quote!(self.http.post(url)),
         (Verb::Post, false) => quote!({
-            let payload = #payload_type { #(#payload_fields),* };
+            #set_payload
             self.http.post(url).json(&payload)
         }),
         (Verb::Put, true) => quote!(self.http.put(url)),
         (Verb::Put, false) => quote!({
-            let payload = #payload_type { #(#payload_fields),* };
+            #set_payload
             self.http.put(url).json(&payload)
         }),
         (Verb::Patch, true) => quote!(self.http.patch(url)),
         (Verb::Patch, false) => quote!({
-            let payload = #payload_type { #(#payload_fields),* };
+            #set_payload
             self.http.patch(url).json(&payload)
         }),
         (Verb::Delete, true) => quote!(self.http.delete(url)),
         (Verb::Delete, false) => quote!({
-            let payload = #payload_type { #(#payload_fields),* };
+            #set_payload
             self.http.delete(url).query(&payload)
         }),
     };
@@ -860,42 +893,67 @@ fn generate_handler(
 ) -> proc_macro2::TokenStream {
     let handler_name = format_ident!("__handle_{}", method.name);
     let result_type = &method.result_type;
-    let path_parameters: Vec<_> = method.parameters.iter().filter(|p| p.in_path).collect();
+    let path_parameters: Vec<_> = method
+        .parameters
+        .iter()
+        .filter(|p| p.kind == ParmKind::Path)
+        .collect();
     let non_path: Vec<_> = method
         .parameters
         .iter()
-        .filter(|p| !p.in_path && !p.in_extension)
+        .filter(|p| p.kind.non_path())
         .collect();
+    let has_struct = non_path.len() == 1 && non_path[0].kind == ParmKind::Struct;
     let extension_parameters: Vec<_> = method
         .parameters
         .iter()
-        .filter(|p| p.in_extension)
+        .filter(|p| p.kind == ParmKind::Extension)
         .collect();
     let path_type = generated_type_name(method, "Path");
-    let payload_type = generated_type_name(
-        method,
-        if method.verb.uses_query() {
-            "Query"
-        } else {
-            "Body"
-        },
-    );
     let derive_path = struct_definition(&path_type, &path_parameters, false, server_cfg);
-    let derive_payload = struct_definition(&payload_type, &non_path, true, transport_cfg);
+
+    // if there is one 'struct' parameter we will not need to generate a wrapper
+    let (payload_type, derive_payload) = if !has_struct {
+        let payload_type = generated_type_name(
+            method,
+            if method.verb.uses_query() {
+                "Query"
+            } else {
+                "Body"
+            },
+        );
+        let derive_payload = struct_definition(&payload_type, &non_path, true, transport_cfg);
+        (payload_type.to_token_stream(), derive_payload)
+    } else {
+        (non_path[0].ty.to_token_stream(), quote!())
+    };
+
+    let extractor_path = |name: &str| -> proc_macro2::TokenStream {
+        let extractor = format_ident!("{name}");
+        quote!(::macroni::__private::#extractor)
+    };
+
     let path_extractor = if path_parameters.is_empty() {
         quote!()
     } else {
         let names = path_parameters.iter().map(|parameter| &parameter.name);
-        quote!(::macroni::__private::Path(#path_type { #(#names),* }): ::macroni::__private::Path<#path_type>,)
+        let extractor = extractor_path("Path");
+        quote!(#extractor(#path_type { #(#names),* }): #extractor<#path_type>,)
     };
     let payload_extractor = if non_path.is_empty() {
         quote!()
     } else {
         let names = non_path.iter().map(|parameter| &parameter.name);
-        if method.verb.uses_query() {
-            quote!(::macroni::__private::Query(#payload_type { #(#names),* }): ::macroni::__private::Query<#payload_type>,)
+        let extractor = if method.verb.uses_query() {
+            "Query"
         } else {
-            quote!(::macroni::__private::Json(#payload_type { #(#names),* }): ::macroni::__private::Json<#payload_type>,)
+            "Json"
+        };
+        let extractor = extractor_path(extractor);
+        if !has_struct {
+            quote!(#extractor(#payload_type { #(#names),* }): #extractor<#payload_type>,)
+        } else {
+            quote!(#extractor(#(#names),* ): #extractor<#payload_type>,)
         }
     };
     let extension_extractors = extension_parameters.iter().map(|parameter| {
@@ -960,6 +1018,10 @@ fn struct_definition(
     item_cfg: &proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     if parameters.is_empty() {
+        return quote!();
+    }
+    // no wrapper necessary, we already have our struct
+    if parameters.len() == 1 && parameters[0].kind == ParmKind::Struct {
         return quote!();
     }
     let fields = parameters.iter().map(|parameter| {
