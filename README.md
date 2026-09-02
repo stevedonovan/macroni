@@ -2,7 +2,7 @@
 
 ## Some Macro Magic
 
-[Axum](https://docs.rs/axum]df[) is a powerful and flexible Web framework by the Tokio team built
+[Axum](https://docs.rs/axum) is a powerful and flexible Web framework by the Tokio team built
 on the lower-level [Hyper](https://docs.rs/hyper) library that can use middleware from
 the [Tower](https://docs.rs/tower) project.
 
@@ -64,7 +64,7 @@ instead of handlers as free async functions using extractor patterns, the handle
 methods and the
 arguments of a shared type (like query in case of GET and body in case of POST) are collected into generated structs.
 The routes themselves
-are specified as macro attributes, like with the `Rocket` framework.
+are specified as macro attributes, as with the `Rocket` framework.
 
 Some conventions are followed when generating the actual `Axum` handlers. For GET handlers, if a
 parameter is not explicitly from the path, then it comes from the query. Similarly, for a POST handler,
@@ -74,8 +74,7 @@ if not a path parameter, then it is assumed to be part of the JSON body. So the 
 ## Client _and_ Server Specified as a Trait
 
 The original case I was envisaging was a Rust server, and a Rust client. In this case the macro `api` operates on an
-_async
-trait_:
+_async trait_:
 
 ```rust
 #[macroni::api]
@@ -134,7 +133,7 @@ let client = MyApiClient::builder("http://localhost:3000") ?
 let role = client.get_by_name("admin".into()) ?;
 ```
 
-`with_http_client` remains available when the application wants complete control over Reqwest.
+`with_http_client` remains available when the application wants complete control over `Reqwest`.
 
 ## Client and server features
 
@@ -167,7 +166,7 @@ pub trait RoleApi {
 
 A client enables only the contract's `client` feature, while a server enables only `server`.
 Using `#[macroni::api]` without feature names generates both client and server unconditionally, except
-in the case where `api` is applied to an implementation directly, which is always just server.
+in the case where `api` is applied to an `impl` block directly, which is always just server.
 
 The server example deliberately composes the generated router with ordinary `Axum` and `Tower`
 middleware. It demonstrates structured request tracing, request IDs, a JSON-producing timeout,
@@ -183,3 +182,14 @@ On the client, errors distinguish remote API responses, local transport failures
 protocol failures such as malformed JSON or an incorrect response content type. Non-success status
 codes are preserved even when the remote error envelope is malformed.
 
+## Other Method Attributes
+
+A method can have a `#[extension(name)]` attribute, where `name` is one of the parameters.
+`name: Type` is transformed into the Axum `Extension(name): Extension<Type>` when middleware has set a
+typed extension value.
+
+It is of course completely possible to generate _just_ a client implementation from a trait - see the
+`direct` example. If we are matching an external API then it's necessary to match the shape of any JSON
+bodies. For example, `fn hello_post(&self, arg: Args)` will by default generate a wrapper struct around
+the single `arg` - at the code generation point, we really don't know if `Arg` is a struct not
+requiring wrapping. The attribute `#[body(arg)]` indicates that we don't want a wrapper.

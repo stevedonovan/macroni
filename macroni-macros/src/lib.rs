@@ -1010,7 +1010,7 @@ fn generate_handler(
         #handler
     }
 }
-// we wrap method parameters into custom structs
+// we wrap method parameters into custom structs, controlled by item_cfg (both client and server)
 fn struct_definition(
     name: &Ident,
     parameters: &[&Parameter],
