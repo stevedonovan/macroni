@@ -3,9 +3,9 @@ use proc_macro::TokenStream;
 use quote::{ToTokens, format_ident, quote};
 use syn::{
     AngleBracketedGenericArguments, Attribute, FnArg, GenericArgument, Ident, ImplItem, Item,
-    ItemImpl, ItemTrait, LitStr, MetaNameValue, Pat, PathArguments, PathSegment, ReturnType,
-    Signature, Token, TraitItem, Type, Visibility, parse::Parser, parse_macro_input,
-    punctuated::Punctuated, spanned::Spanned,
+    ItemImpl, ItemTrait, LitStr, Pat, PathArguments, PathSegment, ReturnType, Signature, Token,
+    TraitItem, Type, Visibility, parse::Parser, parse_macro_input, punctuated::Punctuated,
+    spanned::Spanned,
 };
 
 #[proc_macro_attribute]
@@ -13,7 +13,10 @@ pub fn api(arguments: TokenStream, input: TokenStream) -> TokenStream {
     let item = parse_macro_input!(input as Item);
     match item {
         Item::Impl(mut impl_item) => {
-            let config = Config::default();
+            let config = Config {
+                client_feature: false,
+                server_feature: true,
+            };
             // impl_item.
             let struct_name = match type_at_end_of_path(&impl_item.self_ty) {
                 Ok(seq) => seq.ident.clone(),
@@ -67,8 +70,8 @@ pub fn api(arguments: TokenStream, input: TokenStream) -> TokenStream {
 
 #[derive(Default)]
 struct Config {
-    client_feature: Option<LitStr>,
-    server_feature: Option<LitStr>,
+    client_feature: bool,
+    server_feature: bool,
 }
 
 impl Config {
@@ -76,43 +79,19 @@ impl Config {
         if arguments.is_empty() {
             return Ok(Self::default());
         }
-        let arguments =
-            Punctuated::<MetaNameValue, Token![,]>::parse_terminated.parse(arguments)?;
+        let arguments = Punctuated::<Ident, Token![,]>::parse_terminated.parse(arguments)?;
         let mut config = Self::default();
         for argument in arguments {
-            let value = match argument.value {
-                syn::Expr::Lit(expression) => match expression.lit {
-                    syn::Lit::Str(value) => value,
-                    _ => {
-                        return Err(syn::Error::new(
-                            expression.span(),
-                            "feature names must be string literals",
-                        ));
-                    }
-                },
-                expression => {
-                    return Err(syn::Error::new(
-                        expression.span(),
-                        "feature names must be string literals",
-                    ));
-                }
-            };
-            if argument.path.is_ident("client_feature") && config.client_feature.is_none() {
-                config.client_feature = Some(value);
-            } else if argument.path.is_ident("server_feature") && config.server_feature.is_none() {
-                config.server_feature = Some(value);
+            if argument == "client" && !config.client_feature {
+                config.client_feature = true;
+            } else if argument == "server" && !config.server_feature {
+                config.server_feature = true;
             } else {
                 return Err(syn::Error::new(
-                    argument.path.span(),
-                    "expected `client_feature` or `server_feature` exactly once",
+                    argument.span(),
+                    "expected `client` or `server` or both",
                 ));
             }
-        }
-        if config.client_feature.is_none() || config.server_feature.is_none() {
-            return Err(syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "specify both `client_feature` and `server_feature`, or neither",
-            ));
         }
         Ok(config)
     }
@@ -173,12 +152,14 @@ fn expand(
     let client_builder_name = format_ident!("{}ClientBuilder", trait_name);
     let server_name = format_ident!("{}Server", trait_name);
     let module_name = format_ident!("__macroni_{}", trait_name.to_string().to_snake_case());
-    let client_cfg = feature_cfg(config.client_feature.as_ref());
-    let server_cfg = feature_cfg(config.server_feature.as_ref());
+    let client_cfg = feature_cfg(config.client_feature, "client");
+    let server_cfg = feature_cfg(config.server_feature, "server");
     // the custom serializable structs containing the parameters are needed for both client and server
     let transport_cfg = either_feature_cfg(
-        config.client_feature.as_ref(),
-        config.server_feature.as_ref(),
+        config.client_feature,
+        "client",
+        config.server_feature,
+        "server",
     );
 
     let client_methods = methods.iter().map(generate_client_method);
@@ -443,20 +424,24 @@ fn get_impl_methods(impl_item: &mut ItemImpl) -> syn::Result<Vec<Method>> {
     Ok(methods)
 }
 
-fn feature_cfg(feature: Option<&LitStr>) -> proc_macro2::TokenStream {
-    match feature {
-        Some(feature) => quote!(#[cfg(feature = #feature)]),
-        None => quote!(),
+fn feature_cfg(feature: bool, feature_name: &str) -> proc_macro2::TokenStream {
+    if !feature {
+        quote!(#[cfg(feature = #feature_name)])
+    } else {
+        quote!()
     }
 }
 
 fn either_feature_cfg(
-    client_feature: Option<&LitStr>,
-    server_feature: Option<&LitStr>,
+    client_feature: bool,
+    client_name: &str,
+    server_feature: bool,
+    server_name: &str,
 ) -> proc_macro2::TokenStream {
-    match (client_feature, server_feature) {
-        (Some(client), Some(server)) => quote!(#[cfg(any(feature = #client, feature = #server))]),
-        _ => quote!(),
+    if !client_feature && !server_feature {
+        quote!(#[cfg(any(feature = #client_name, feature = #server_name))])
+    } else {
+        quote!()
     }
 }
 
