@@ -60,7 +60,7 @@ pub async fn decode_response<T: DeserializeOwned>(
         })
     } else {
         match serde_json::from_slice::<ErrorResponse>(&body) {
-            Ok(response) => Err(Error::Remote { status, response }),
+            Ok(response) => Err(Error::User { status, response }),
             Err(error) => Err(Error::protocol(
                 Some(status),
                 format!("invalid JSON error response: {error}"),

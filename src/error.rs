@@ -29,10 +29,9 @@ pub enum Error {
         status: StatusCode,
         response: ErrorResponse,
     },
-    Internal(anyhow::Error),
-    Remote {
-        status: StatusCode,
-        response: ErrorResponse,
+    Server {
+        message: String,
+        body: Option<String>,
     },
     Transport {
         source: Box<dyn std::error::Error + Send + Sync>,
@@ -46,6 +45,7 @@ pub enum Error {
 }
 
 impl Error {
+    /// this is the most customizable error available.
     pub fn user(status: StatusCode, code: impl Into<String>, message: impl Into<String>) -> Self {
         Self::User {
             status,
@@ -65,6 +65,8 @@ impl Error {
         Self::user(StatusCode::NOT_FOUND, code, message)
     }
 
+    /// add more structured details to a user error
+    /// e.g. `Error::user(StatusCode::BadRequest,"bad","wrong parm").with_details(json!({"parm":"health}))`
     pub fn with_details(mut self, details: Value) -> Self {
         if let Self::User { response, .. } = &mut self {
             response.details = Some(details);
@@ -72,8 +74,12 @@ impl Error {
         self
     }
 
-    pub fn internal(error: impl Into<anyhow::Error>) -> Self {
-        Self::Internal(error.into())
+    /// All server errors render as status 500. For other codes, use `user`
+    pub fn server(msg: impl ToString, description: impl ToString) -> Self {
+        Self::Server {
+            message: msg.to_string(),
+            body: Some(description.to_string()),
+        }
     }
 
     pub fn protocol(
@@ -95,42 +101,43 @@ impl Error {
         }
     }
 
+    /// HTTP status of this error (note protocol errors do not have status)
     pub fn status(&self) -> Option<StatusCode> {
         match self {
-            Self::User { status, .. } | Self::Remote { status, .. } => Some(*status),
+            Self::User { status, .. } => Some(*status),
             Self::Protocol { status, .. } => *status,
-            Self::Internal(_) | Self::Transport { .. } => None,
+            Self::Server { .. } => Some(StatusCode::INTERNAL_SERVER_ERROR),
+            Self::Transport { .. } => None,
         }
     }
 
     pub fn code(&self) -> Option<&str> {
         match self {
-            Self::User { response, .. } | Self::Remote { response, .. } => Some(&response.code),
+            Self::User { response, .. } => Some(&response.code),
             _ => None,
         }
     }
 
+    /// the request has timed out
     pub fn is_timeout(&self) -> bool {
         matches!(self, Self::Transport { timeout: true, .. })
+    }
+
+    /// the endpoint has decided to time out
+    pub fn is_request_timeout(&self) -> bool {
+        matches!(self, Self::User {status,..} if *status == StatusCode::REQUEST_TIMEOUT)
     }
 
     pub fn is_transport(&self) -> bool {
         matches!(self, Self::Transport { .. })
     }
 
-    pub fn is_remote(&self) -> bool {
-        matches!(self, Self::Remote { .. })
+    pub fn is_server(&self) -> bool {
+        matches!(self, Self::Server { .. } | Self::User { .. })
     }
 
     pub fn is_protocol(&self) -> bool {
         matches!(self, Self::Protocol { .. })
-    }
-
-    pub fn body_excerpt(&self) -> Option<&str> {
-        match self {
-            Self::Protocol { body, .. } => body.as_deref(),
-            _ => None,
-        }
     }
 }
 
@@ -138,10 +145,9 @@ impl Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::User { response, .. } => write!(f, "{}: {}", response.code, response.message),
-            Self::Remote { response, .. } => {
-                write!(f, "remote {}: {}", response.code, response.message)
+            Self::Server { message, body } => {
+                write!(f, "{}: {}", message, body.clone().unwrap_or_default())
             }
-            Self::Internal(error) => Display::fmt(error, f),
             Self::Transport { source, .. } => Display::fmt(source, f),
             Self::Protocol { message, .. } => f.write_str(message),
         }
@@ -151,7 +157,6 @@ impl Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Internal(error) => Some(error.as_ref()),
             Self::Transport { source, .. } => Some(source.as_ref()),
             _ => None,
         }
@@ -174,15 +179,9 @@ impl IntoResponse for Error {
     fn into_response(self) -> Response {
         match self {
             Self::User { status, response } => (status, Json(response)).into_response(),
-            Self::Internal(error) => {
-                tracing::error!(error = %error, "internal API error");
-                internal_response()
-            }
-            Self::Remote {
-                status: _,
-                response,
-            } => {
-                tracing::error!(code = %response.code, "unexpected remote error in API server");
+            Self::Server { message, body } => {
+                let body = body.unwrap_or_default();
+                tracing::error!(error = %message, body = %body, "internal API error");
                 internal_response()
             }
             Self::Transport { source, .. } => {
