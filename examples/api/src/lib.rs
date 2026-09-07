@@ -14,7 +14,7 @@ pub struct AuthenticatedUser {
     pub user_id: String,
 }
 
-#[api(client_feature = "client", server_feature = "server")]
+#[api]
 pub trait RoleApi {
     #[get("/role/{name}")]
     async fn get_by_name(&self, name: String, include_disabled: bool) -> Result<Role>;
@@ -28,6 +28,9 @@ pub trait RoleApi {
     #[get("/whoami")]
     #[extension(auth)]
     async fn who_am_i(&self, auth: AuthenticatedUser) -> Result<String>;
+
+    #[post("/sub")]
+    async fn sub(&self, sub: String) -> Result<bool>;
 
     #[get("/slow/{id}")]
     async fn slow(&self, id: String) -> Result<String>;

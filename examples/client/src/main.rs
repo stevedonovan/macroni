@@ -23,5 +23,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         client.delete_by_name("admin".into(), true).await?
     );
 
+    loop {
+        match client.slow("frodo".into()).await {
+            Ok(val) => {
+                println!("we got: {:?}", val);
+                if val == "finis" {
+                    break;
+                }
+            }
+            Err(e) => {
+                if e.is_request_timeout() {
+                    println!("timeout");
+                } else {
+                    return Err(e.into());
+                }
+            }
+        }
+    }
+
     Ok(())
 }

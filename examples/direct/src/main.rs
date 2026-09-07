@@ -7,7 +7,7 @@ pub struct Args {
     age: u32,
 }
 
-#[macroni::api(client_feature = "client", server_feature = "server")]
+#[macroni::api(client)]
 pub trait ExternalApi {
     #[get("/hello")]
     async fn hello(&self, name: String, age: u32) -> macroni::Result<String>;
