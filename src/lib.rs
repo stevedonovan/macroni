@@ -159,6 +159,7 @@ pub mod __private {
     #[cfg(feature = "client")]
     pub use reqwest;
     pub use serde;
+    use std::path::PathBuf;
 
     #[cfg(feature = "client")]
     pub use crate::client::decode_response;
@@ -181,5 +182,27 @@ pub mod __private {
             .add(b'}');
 
         percent_encoding::utf8_percent_encode(value, PATH_SEGMENT).to_string()
+    }
+
+    #[cfg(feature = "client")]
+    pub fn parse_url(base_url: &str) -> super::Result<(reqwest::Url, Option<PathBuf>)> {
+        if base_url.starts_with("/") {
+            Ok((
+                "http://localhost".parse().unwrap(),
+                Some(PathBuf::from(base_url)),
+            ))
+        } else {
+            let base_url = reqwest::Url::parse(base_url).map_err(|error| {
+                super::Error::protocol(None, format!("invalid API base URL: {error}"), None)
+            })?;
+            if !matches!(base_url.scheme(), "http" | "https") || base_url.cannot_be_a_base() {
+                return Err(super::Error::protocol(
+                    None,
+                    "API base URL must be an absolute HTTP or HTTPS URL",
+                    None,
+                ));
+            }
+            Ok((base_url, None))
+        }
     }
 }

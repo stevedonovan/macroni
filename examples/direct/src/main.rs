@@ -19,7 +19,8 @@ pub trait ExternalApi {
 
 #[tokio::main]
 async fn main() {
-    let client = ExternalApiClient::new("http://localhost:3000").expect("client");
+    let address = std::env::var("HELLO_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into());
+    let client = ExternalApiClient::new(address).expect("client");
     let res = client.hello("John Doe".into(), 24).await.unwrap();
     println!("Hello, {res}!");
     let res = client

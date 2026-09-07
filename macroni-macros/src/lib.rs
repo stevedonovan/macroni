@@ -16,6 +16,7 @@ pub fn api(arguments: TokenStream, input: TokenStream) -> TokenStream {
             let config = Config {
                 client_feature: false,
                 server_feature: true,
+                uses_features: false,
             };
             // impl_item.
             let struct_name = match type_at_end_of_path(&impl_item.self_ty) {
@@ -28,7 +29,7 @@ pub fn api(arguments: TokenStream, input: TokenStream) -> TokenStream {
                 Err(error) => return error.into_compile_error().into(),
             };
             let item = quote! { #impl_item };
-            match expand(item, &config, struct_name, visibility, methods, true) {
+            match expand(item, &config, struct_name, visibility, methods) {
                 Ok(output) => output.into(),
                 Err(error) => error.into_compile_error().into(),
             }
@@ -38,6 +39,15 @@ pub fn api(arguments: TokenStream, input: TokenStream) -> TokenStream {
                 Ok(config) => config,
                 Err(error) => return error.into_compile_error().into(),
             };
+
+            if config.server_feature && !config.client_feature {
+                return syn::Error::new(
+                    trait_item.generics.span(),
+                    "can either have (client),(client,server) or ()",
+                )
+                .into_compile_error()
+                .into();
+            }
 
             if !trait_item.generics.params.is_empty() {
                 return syn::Error::new(
@@ -54,7 +64,7 @@ pub fn api(arguments: TokenStream, input: TokenStream) -> TokenStream {
                 Err(error) => return error.into_compile_error().into(),
             };
             let item = quote! { #trait_item };
-            match expand(item, &config, trait_name, visibility, methods, false) {
+            match expand(item, &config, trait_name, visibility, methods) {
                 Ok(output) => output.into(),
                 Err(error) => error.into_compile_error().into(),
             }
@@ -72,12 +82,17 @@ pub fn api(arguments: TokenStream, input: TokenStream) -> TokenStream {
 struct Config {
     client_feature: bool,
     server_feature: bool,
+    uses_features: bool,
 }
 
 impl Config {
     fn parse(arguments: TokenStream) -> syn::Result<Self> {
         if arguments.is_empty() {
-            return Ok(Self::default());
+            return Ok(Self {
+                client_feature: false,
+                server_feature: false,
+                uses_features: true,
+            });
         }
         let arguments = Punctuated::<Ident, Token![,]>::parse_terminated.parse(arguments)?;
         let mut config = Self::default();
@@ -93,6 +108,7 @@ impl Config {
                 ));
             }
         }
+        config.uses_features = !config.client_feature && !config.server_feature;
         Ok(config)
     }
 }
@@ -146,14 +162,15 @@ fn expand(
     trait_name: Ident,
     visibility: Visibility,
     methods: Vec<Method>,
-    was_impl: bool,
 ) -> syn::Result<proc_macro2::TokenStream> {
+    let was_impl = config.server_feature;
+    let use_features = !config.server_feature && !config.client_feature;
     let client_name = format_ident!("{}Client", trait_name);
     let client_builder_name = format_ident!("{}ClientBuilder", trait_name);
     let server_name = format_ident!("{}Server", trait_name);
     let module_name = format_ident!("__macroni_{}", trait_name.to_string().to_snake_case());
-    let client_cfg = feature_cfg(config.client_feature, "client");
-    let server_cfg = feature_cfg(config.server_feature, "server");
+    let client_cfg = feature_cfg(config.client_feature, config.server_feature, "client");
+    let server_cfg = feature_cfg(config.server_feature, config.client_feature, "server");
     // the custom serializable structs containing the parameters are needed for both client and server
     let transport_cfg = either_feature_cfg(
         config.client_feature,
@@ -168,16 +185,19 @@ fn expand(
         .filter_map(|method| generate_client_convenience_method(method, &visibility));
     let handler_items = methods
         .iter()
-        .map(|method| generate_handler(&trait_name, method, &server_cfg, &transport_cfg, was_impl));
-    let routes = methods.iter().map(|m| generate_route(m, was_impl));
+        .map(|method| generate_handler(&trait_name, method, &server_cfg, &transport_cfg, &config))
+        .collect::<Vec<_>>();
+    let routes = methods.iter().map(|m| generate_route(m, &config));
 
-    let client_impl = if !was_impl {
+    let private = quote!(::macroni::__private);
+
+    let client_impl = if config.client_feature || config.uses_features {
         quote! {
                 #client_cfg
                 #[derive(Clone, Debug)]
                 #visibility struct #client_name {
-                    base_url: ::macroni::__private::reqwest::Url,
-                    http: ::macroni::__private::reqwest::Client,
+                    base_url: #private::reqwest::Url,
+                    http: #private::reqwest::Client,
                     max_response_bytes: usize,
                 }
 
@@ -197,9 +217,9 @@ fn expand(
 
                     #visibility fn with_http_client(
                         base_url: impl ::core::convert::AsRef<str>,
-                        http: ::macroni::__private::reqwest::Client,
+                        http: #private::reqwest::Client,
                     ) -> ::macroni::Result<Self> {
-                        let base_url = ::macroni::__private::reqwest::Url::parse(base_url.as_ref())
+                        let base_url = #private::reqwest::Url::parse(base_url.as_ref())
                             .map_err(|error| ::macroni::Error::protocol(
                                 None,
                                 ::std::format!("invalid API base URL: {error}"),
@@ -217,34 +237,26 @@ fn expand(
 
                 #client_cfg
                 #visibility struct #client_builder_name {
-                    base_url: ::macroni::__private::reqwest::Url,
-                    http: ::macroni::__private::reqwest::ClientBuilder,
-                    default_headers: ::macroni::__private::reqwest::header::HeaderMap,
+                    base_url: #private::reqwest::Url,
+                    http: #private::reqwest::ClientBuilder,
+                    default_headers: #private::reqwest::header::HeaderMap,
                     max_response_bytes: usize,
                 }
 
                 #client_cfg
                 impl #client_builder_name {
                     fn new(base_url: impl ::core::convert::AsRef<str>) -> ::macroni::Result<Self> {
-                        let base_url = ::macroni::__private::reqwest::Url::parse(base_url.as_ref())
-                            .map_err(|error| ::macroni::Error::protocol(
-                                None,
-                                ::std::format!("invalid API base URL: {error}"),
-                                None,
-                            ))?;
-                        if !matches!(base_url.scheme(), "http" | "https") || base_url.cannot_be_a_base() {
-                            return Err(::macroni::Error::protocol(
-                                None,
-                                "API base URL must be an absolute HTTP or HTTPS URL",
-                                None,
-                            ));
+                        let (base_url,socket) = #private::parse_url(base_url.as_ref())?;
+                        let mut http = #private::reqwest::Client::builder()
+                                .timeout(::std::time::Duration::from_secs(10))
+                                .connect_timeout(::std::time::Duration::from_secs(2));
+                        if let Some(socket) = socket {
+                            http = http.unix_socket(socket);
                         }
                         Ok(Self {
                             base_url,
-                            http: ::macroni::__private::reqwest::Client::builder()
-                                .timeout(::std::time::Duration::from_secs(10))
-                                .connect_timeout(::std::time::Duration::from_secs(2)),
-                            default_headers: ::macroni::__private::reqwest::header::HeaderMap::new(),
+                            http,
+                            default_headers: #private::reqwest::header::HeaderMap::new(),
                             max_response_bytes: 8 * 1024 * 1024,
                         })
                     }
@@ -261,7 +273,7 @@ fn expand(
 
                     #visibility fn default_headers(
                         mut self,
-                        headers: ::macroni::__private::reqwest::header::HeaderMap,
+                        headers: #private::reqwest::header::HeaderMap,
                     ) -> Self {
                         self.default_headers.extend(headers);
                         self
@@ -269,11 +281,11 @@ fn expand(
 
                     #visibility fn authorization(
                         mut self,
-                        mut value: ::macroni::__private::reqwest::header::HeaderValue,
+                        mut value: #private::reqwest::header::HeaderValue,
                     ) -> Self {
                         value.set_sensitive(true);
                         self.default_headers.insert(
-                            ::macroni::__private::reqwest::header::AUTHORIZATION,
+                            #private::reqwest::header::AUTHORIZATION,
                             value,
                         );
                         self
@@ -283,7 +295,7 @@ fn expand(
                         self,
                         token: impl ::core::convert::AsRef<str>,
                     ) -> ::macroni::Result<Self> {
-                        let value = ::macroni::__private::reqwest::header::HeaderValue::from_str(
+                        let value = #private::reqwest::header::HeaderValue::from_str(
                             &::std::format!("Bearer {}", token.as_ref()),
                         ).map_err(|error| ::macroni::Error::protocol(
                             None,
@@ -315,8 +327,6 @@ fn expand(
                 impl super::#trait_name for #client_name {
                     #(#client_methods)*
                 }
-
-
         }
     } else {
         quote! {}
@@ -349,13 +359,38 @@ fn expand(
         }
     };
 
-    let client_builder_export = if was_impl {
-        quote! {}
-    } else {
+    let client_builder_export = if config.client_feature || config.uses_features {
         quote! {
         #client_cfg
         #visibility use #module_name::{#client_builder_name, #client_name};
         }
+    } else {
+        quote!()
+    };
+
+    let server_impl = if config.server_feature || config.uses_features {
+        quote! {
+            #server_cfg
+            #visibility struct #server_name;
+
+            #server_cfg
+            impl #server_name {
+                #router
+            }
+
+
+        }
+    } else {
+        quote!()
+    };
+
+    let export_server = if config.server_feature || use_features {
+        quote! {
+            #server_cfg
+            #visibility use #module_name::#server_name;
+        }
+    } else {
+        quote!()
     };
 
     Ok(quote! {
@@ -367,21 +402,14 @@ fn expand(
 
             #client_impl
 
-            #server_cfg
-            #visibility struct #server_name;
-
-            #server_cfg
-            impl #server_name {
-                #router
-            }
+            #server_impl
 
             #(#handler_items)*
+
         }
 
         #client_builder_export
-
-        #server_cfg
-        #visibility use #module_name::#server_name;
+        #export_server
     })
 }
 
@@ -424,8 +452,8 @@ fn get_impl_methods(impl_item: &mut ItemImpl) -> syn::Result<Vec<Method>> {
     Ok(methods)
 }
 
-fn feature_cfg(feature: bool, feature_name: &str) -> proc_macro2::TokenStream {
-    if !feature {
+fn feature_cfg(feature: bool, other: bool, feature_name: &str) -> proc_macro2::TokenStream {
+    if !feature && !other {
         quote!(#[cfg(feature = #feature_name)])
     } else {
         quote!()
@@ -874,7 +902,7 @@ fn generate_handler(
     method: &Method,
     server_cfg: &proc_macro2::TokenStream,
     transport_cfg: &proc_macro2::TokenStream,
-    was_impl: bool,
+    config: &Config,
 ) -> proc_macro2::TokenStream {
     let handler_name = format_ident!("__handle_{}", method.name);
     let result_type = &method.result_type;
@@ -949,22 +977,21 @@ fn generate_handler(
     let call_arguments = method.parameters.iter().map(|parameter| &parameter.name);
     let method_name = &method.name;
 
-    let handler = if was_impl {
+    let handler = if config.server_feature {
         // server-only handler implemented directly on the impl block
         let struct_name = trait_name;
         quote! {
-        async fn #handler_name(
-            ::macroni::__private::axum::extract::State(implementation):
-                ::macroni::__private::axum::extract::State<::std::sync::Arc<#struct_name>>,
-            #path_extractor
-            #(#extension_extractors)*
-            #payload_extractor
-        ) -> ::macroni::Result<::macroni::__private::axum::Json<#result_type>>
-        {
-            let result = implementation.#method_name(#(#call_arguments),*).await?;
-            Ok(::macroni::__private::axum::Json(result))
-        }
-
+            async fn #handler_name(
+                ::macroni::__private::axum::extract::State(implementation):
+                    ::macroni::__private::axum::extract::State<::std::sync::Arc<#struct_name>>,
+                #path_extractor
+                #(#extension_extractors)*
+                #payload_extractor
+            ) -> ::macroni::Result<::macroni::__private::axum::Json<#result_type>>
+            {
+                let result = implementation.#method_name(#(#call_arguments),*).await?;
+                Ok(::macroni::__private::axum::Json(result))
+            }
         }
     } else {
         // and this handler is generic for any implementation of the trait (client and/or server)
@@ -987,12 +1014,19 @@ fn generate_handler(
         }
     };
 
+    let maybe_handler = if config.server_feature || config.uses_features {
+        quote! {
+            #server_cfg
+            #handler
+        }
+    } else {
+        quote!()
+    };
+
     quote! {
         #derive_path
         #derive_payload
-
-        #server_cfg
-        #handler
+        #maybe_handler
     }
 }
 // we wrap method parameters into custom structs, controlled by item_cfg (both client and server)
@@ -1014,6 +1048,7 @@ fn struct_definition(
         let ty = &parameter.ty;
         quote!(#name: #ty)
     });
+
     let derive = if serialize {
         quote!(
             ::macroni::__private::serde::Serialize,
@@ -1030,10 +1065,10 @@ fn struct_definition(
     }
 }
 
-fn generate_route(method: &Method, use_impl: bool) -> proc_macro2::TokenStream {
+fn generate_route(method: &Method, config: &Config) -> proc_macro2::TokenStream {
     let path = &method.path;
     let handler = format_ident!("__handle_{}", method.name);
-    let generic = if use_impl {
+    let generic = if config.server_feature {
         quote! {}
     } else {
         quote!( ::<T> )
