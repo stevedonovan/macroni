@@ -2,4 +2,4 @@ error: API methods must begin with an `&self` receiver
  --> tests/ui/invalid_receiver.rs:6:20
   |
 6 |     async fn value(&mut self) -> macroni::Result<()>;
-  |                    ^^^^^^^^^
+  |                    ^

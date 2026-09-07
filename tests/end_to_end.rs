@@ -51,12 +51,12 @@ async fn authenticate(
 ) -> axum::response::Response {
     if request
         .headers()
-        .get(axum::http::header::AUTHORIZATION)
+        .get(http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         != Some("Bearer test-secret")
     {
         return Error::user(
-            axum::http::StatusCode::UNAUTHORIZED,
+            http::StatusCode::UNAUTHORIZED,
             "unauthorized",
             "Bearer token required",
         )
@@ -169,7 +169,7 @@ async fn generated_client_and_router_round_trip() {
         .who_am_i()
         .await
         .expect_err("request without bearer token should fail");
-    assert_eq!(error.status(), Some(axum::http::StatusCode::UNAUTHORIZED));
+    assert_eq!(error.status(), Some(http::StatusCode::UNAUTHORIZED));
 
     let client = RoleApiClient::builder(format!("http://{address}"))
         .expect("build API client")
@@ -198,19 +198,16 @@ async fn generated_client_and_router_round_trip() {
         .get_by_name("missing".into(), false)
         .await
         .expect_err("missing role should fail");
-    assert_eq!(error.status(), Some(axum::http::StatusCode::NOT_FOUND));
+    assert_eq!(error.status(), Some(http::StatusCode::NOT_FOUND));
     assert!(error.to_string().contains("role_not_found"));
-    assert!(error.is_remote());
+    assert!(error.is_server());
     assert_eq!(error.code(), Some("role_not_found"));
 
     let timeout = client
         .slow()
         .await
         .expect_err("slow request should time out");
-    assert_eq!(
-        timeout.status(),
-        Some(axum::http::StatusCode::GATEWAY_TIMEOUT)
-    );
+    assert_eq!(timeout.status(), Some(http::StatusCode::GATEWAY_TIMEOUT));
     assert_eq!(timeout.code(), Some("request_timeout"));
     assert_eq!(
         client.who_am_i().await.expect("read auth extension"),
