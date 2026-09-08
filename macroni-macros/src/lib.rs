@@ -64,6 +64,7 @@ pub fn api(arguments: TokenStream, input: TokenStream) -> TokenStream {
                 Err(error) => return error.into_compile_error().into(),
             };
             let item = quote! { #trait_item };
+
             match expand(item, &config, trait_name, visibility, methods) {
                 Ok(output) => output.into(),
                 Err(error) => error.into_compile_error().into(),
@@ -154,6 +155,7 @@ struct Method {
     path: LitStr,
     parameters: Vec<Parameter>,
     result_type: Type,
+    mutable_receiver: bool,
 }
 
 fn expand(
@@ -163,8 +165,8 @@ fn expand(
     visibility: Visibility,
     methods: Vec<Method>,
 ) -> syn::Result<proc_macro2::TokenStream> {
-    let was_impl = config.server_feature;
-    let use_features = !config.server_feature && !config.client_feature;
+    let contains_mutable_receiver = methods.iter().any(|m| m.mutable_receiver);
+    let was_impl = config.server_feature && !config.client_feature;
     let client_name = format_ident!("{}Client", trait_name);
     let client_builder_name = format_ident!("{}ClientBuilder", trait_name);
     let server_name = format_ident!("{}Server", trait_name);
@@ -185,7 +187,16 @@ fn expand(
         .filter_map(|method| generate_client_convenience_method(method, &visibility));
     let handler_items = methods
         .iter()
-        .map(|method| generate_handler(&trait_name, method, &server_cfg, &transport_cfg, &config))
+        .map(|method| {
+            generate_handler(
+                &trait_name,
+                method,
+                &server_cfg,
+                &transport_cfg,
+                &config,
+                contains_mutable_receiver,
+            )
+        })
         .collect::<Vec<_>>();
     let routes = methods.iter().map(|m| generate_route(m, &config));
 
@@ -332,29 +343,42 @@ fn expand(
         quote! {}
     };
 
+    let axum = quote!(::macroni::__private::axum);
+
+    let tokio = quote!(::macroni::tokio);
+    let wrapper = if contains_mutable_receiver {
+        quote! {
+            ::std::sync::Arc::new(#tokio::sync::RwLock::new(implementation))
+        }
+    } else {
+        quote! {
+            ::std::sync::Arc::new(implementation)
+        }
+    };
+
     let router = if was_impl {
         // this is a pure implementation on a plain impl block (server)
         let struct_name = trait_name.clone();
         quote! {
-            pub fn router(implementation: ::std::sync::Arc<#struct_name>)
-              -> ::macroni::__private::axum::Router
+            pub fn router(implementation: #struct_name)
+              -> #axum::Router
             {
-                ::macroni::__private::axum::Router::new()
+                #axum::Router::new()
                 #(#routes)*
-                .with_state(implementation)
+                .with_state(#wrapper)
             }
         }
     } else {
         // this is a trait-based implementation (client and/or server)
         quote! {
-            #visibility fn router<T>(implementation: ::std::sync::Arc<T>)
-              -> ::macroni::__private::axum::Router
+            #visibility fn router<T>(implementation: T)
+              -> #axum::Router
             where
                 T: super::#trait_name + Send + Sync + 'static,
             {
-                ::macroni::__private::axum::Router::new()
+                #axum::Router::new()
                 #(#routes)*
-                .with_state(implementation)
+                .with_state(#wrapper)
             }
         }
     };
@@ -384,7 +408,7 @@ fn expand(
         quote!()
     };
 
-    let export_server = if config.server_feature || use_features {
+    let export_server = if config.server_feature || config.uses_features {
         quote! {
             #server_cfg
             #visibility use #module_name::#server_name;
@@ -497,16 +521,17 @@ fn parse_method(
     let body_name = take_simple_attributes(attrs, "body")?;
     let path_names = placeholders(&path)?;
     let mut inputs = sig.inputs.iter();
-    match inputs.next() {
-        Some(FnArg::Receiver(receiver))
-            if receiver.reference.is_some() && receiver.mutability.is_none() => {}
+    let mutable_receiver = match inputs.next() {
+        Some(FnArg::Receiver(receiver)) if receiver.reference.is_some() => {
+            receiver.mutability.is_some()
+        }
         _ => {
             return Err(syn::Error::new(
                 sig.inputs.span(),
-                "API methods must begin with an `&self` receiver",
+                "API methods must begin with an `&self` or `&mut self` receiver",
             ));
         }
-    }
+    };
 
     let mut parameters = Vec::new();
     for input in inputs {
@@ -582,6 +607,7 @@ fn parse_method(
         path,
         parameters,
         result_type,
+        mutable_receiver,
     })
 }
 
@@ -903,6 +929,7 @@ fn generate_handler(
     server_cfg: &proc_macro2::TokenStream,
     transport_cfg: &proc_macro2::TokenStream,
     config: &Config,
+    contains_mutable_receiver: bool,
 ) -> proc_macro2::TokenStream {
     let handler_name = format_ident!("__handle_{}", method.name);
     let result_type = &method.result_type;
@@ -945,7 +972,7 @@ fn generate_handler(
         let extractor = format_ident!("{name}");
         quote!(::macroni::__private::#extractor)
     };
-
+    let axum = quote!(::macroni::__private::axum);
     let path_extractor = if path_parameters.is_empty() {
         quote!()
     } else {
@@ -972,43 +999,72 @@ fn generate_handler(
     let extension_extractors = extension_parameters.iter().map(|parameter| {
         let name = &parameter.name;
         let ty = &parameter.ty;
-        quote!(::macroni::__private::axum::Extension(#name): ::macroni::__private::axum::Extension<#ty>,)
+        quote!(#axum::Extension(#name): #axum::Extension<#ty>,)
     });
     let call_arguments = method.parameters.iter().map(|parameter| &parameter.name);
     let method_name = &method.name;
 
-    let handler = if config.server_feature {
+    let tokio = quote!(::macroni::tokio);
+
+    // if this macro is applied to an impl block, then server_feature is true;
+    // (but watch out for the case that client_feature is also true.)
+    // In this case, we work with the concrete type; otherwise with the generic type `T`
+    // constrained by our trait
+    let was_impl = config.server_feature && !config.client_feature;
+    let struct_name = if was_impl {
+        trait_name.to_token_stream()
+    } else {
+        quote!(T)
+    };
+    // when there's at least one method with `&mut self` then the actual state
+    // is a Tokio read-write lock (regular RwLock does *not* work)
+    let (accessor, type_of_state) = if contains_mutable_receiver {
+        (
+            if method.mutable_receiver {
+                quote!(implementation.write().await)
+            } else {
+                quote!(implementation.read().await)
+            },
+            quote!(::std::sync::Arc<#tokio::sync::RwLock<#struct_name>>),
+        )
+    } else {
+        (
+            quote!(implementation),
+            quote!(::std::sync::Arc<#struct_name>),
+        )
+    };
+
+    let handler = if was_impl {
         // server-only handler implemented directly on the impl block
-        let struct_name = trait_name;
         quote! {
             async fn #handler_name(
-                ::macroni::__private::axum::extract::State(implementation):
-                    ::macroni::__private::axum::extract::State<::std::sync::Arc<#struct_name>>,
+                #axum::extract::State(implementation):
+                    #axum::extract::State<#type_of_state>,
                 #path_extractor
                 #(#extension_extractors)*
                 #payload_extractor
-            ) -> ::macroni::Result<::macroni::__private::axum::Json<#result_type>>
+            ) -> ::macroni::Result<#axum::Json<#result_type>>
             {
-                let result = implementation.#method_name(#(#call_arguments),*).await?;
-                Ok(::macroni::__private::axum::Json(result))
+                let result = #accessor.#method_name(#(#call_arguments),*).await?;
+                Ok(#axum::Json(result))
             }
         }
     } else {
         // and this handler is generic for any implementation of the trait (client and/or server)
         quote! {
         async fn #handler_name <T> (
-            ::macroni::__private::axum::extract::State(implementation):
-                ::macroni::__private::axum::extract::State<::std::sync::Arc<T>>,
+            #axum::extract::State(implementation):
+                #axum::extract::State<#type_of_state>,
             #path_extractor
             #(#extension_extractors)*
             #payload_extractor
-        ) -> ::macroni::Result<::macroni::__private::axum::Json<#result_type>>
+        ) -> ::macroni::Result<#axum::Json<#result_type>>
             where
                 T: super::#trait_name + Send + Sync + 'static,
         {
             use super::#trait_name as _;
-            let result = implementation.#method_name(#(#call_arguments),*).await?;
-            Ok(::macroni::__private::axum::Json(result))
+            let result = #accessor.#method_name(#(#call_arguments),*).await?;
+            Ok(#axum::Json(result))
         }
 
         }
