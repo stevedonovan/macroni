@@ -159,7 +159,6 @@ pub mod __private {
     #[cfg(feature = "client")]
     pub use reqwest;
     pub use serde;
-    use std::path::PathBuf;
 
     #[cfg(feature = "client")]
     pub use crate::client::decode_response;
@@ -185,11 +184,11 @@ pub mod __private {
     }
 
     #[cfg(feature = "client")]
-    pub fn parse_url(base_url: &str) -> super::Result<(reqwest::Url, Option<PathBuf>)> {
+    pub fn parse_url(base_url: &str) -> super::Result<(reqwest::Url, Option<std::path::PathBuf>)> {
         if base_url.starts_with("/") {
             Ok((
                 "http://localhost".parse().unwrap(),
-                Some(PathBuf::from(base_url)),
+                Some(std::path::PathBuf::from(base_url)),
             ))
         } else {
             let base_url = reqwest::Url::parse(base_url).map_err(|error| {
