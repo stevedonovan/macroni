@@ -1,7 +1,6 @@
 use macroni::Result;
 use macroni::serde_json::{Value, json};
 use macroni::tokio;
-use std::sync::Arc;
 
 struct Implementation {
     id: String,
@@ -21,13 +20,19 @@ impl Implementation {
     pub async fn send_hello(&self, name: String, age: u32) -> Result<Value> {
         Ok(json!({"user": self.id, "name": name, "age": age}))
     }
+
+    #[post("/set/{id}")]
+    pub async fn set_role(&mut self, id: String) -> Result<()> {
+        self.id = id;
+        Ok(())
+    }
 }
 
 #[tokio::main]
 async fn main() {
-    let server = ImplementationServer::router(Arc::new(Implementation {
+    let server = ImplementationServer::router(Implementation {
         id: "Admin".to_owned(),
-    }));
+    });
 
     let address = std::env::var("HELLO_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into());
 

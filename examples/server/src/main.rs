@@ -4,7 +4,7 @@ use axum::{http, middleware};
 use macroni::StatusCode;
 use role_api::{AuthenticatedUser, Error, Result, Role, RoleApi, RoleApiServer};
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::RwLock;
 use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::{Mutex, mpsc};
@@ -128,7 +128,7 @@ async fn main() {
         )
         .init();
 
-    let app = RoleApiServer::router(Arc::new(RoleService::new()))
+    let app = RoleApiServer::router(RoleService::new())
         .layer(macroni::server::body_limit(1024 * 1024))
         // .layer(middleware::from_fn_with_state(
         //     Duration::from_secs(10),
