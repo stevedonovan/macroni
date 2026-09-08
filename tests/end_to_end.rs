@@ -2,7 +2,7 @@ use axum::response::IntoResponse;
 use macroni::{Error, Result, api};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::RwLock;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Role {
@@ -15,7 +15,7 @@ pub struct AuthenticatedUser {
     name: String,
 }
 
-#[api]
+#[api(server, client)]
 pub trait RoleApi {
     #[get("/role/{name}")]
     async fn get_by_name(&self, name: String, include_disabled: bool) -> Result<Role>;
@@ -152,7 +152,7 @@ async fn generated_client_and_router_round_trip() {
         .await
         .expect("bind test listener");
     let address = listener.local_addr().expect("test listener address");
-    let router = RoleApiServer::router(Arc::new(RoleService::default()))
+    let router = RoleApiServer::router(RoleService::default())
         .layer(macroni::server::body_limit(1024))
         .layer(axum::middleware::from_fn_with_state(
             std::time::Duration::from_millis(10),
