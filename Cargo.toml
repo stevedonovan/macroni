@@ -2,7 +2,7 @@
 name = "macroni"
 description = "Macros for generating Axum handlers from async methods"
 license = "MIT"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 autobins = false
 
@@ -20,7 +20,6 @@ client = ["dep:percent-encoding", "dep:reqwest"]
 server = ["dep:axum", "dep:tokio", "dep:tracing"]
 
 [dependencies]
-anyhow = "1.0"
 axum = { version = "0.8", optional = true }
 http = "1"
 macroni-macros = { version = "0.2.0", path = "macroni-macros" }

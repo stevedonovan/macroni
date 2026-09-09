@@ -1,7 +1,7 @@
 //! Define JSON-over-HTTP APIs with Axum and (optionally) generate a client
 //! using Reqwest.
 //!
-//! [Axum](https://docs.rs/axum]df[) is a powerful and flexible Web framework by the Tokio team built
+//! [Axum](https://docs.rs/axum) is a powerful and flexible Web framework by the Tokio team built
 //! on the lower-level [Hyper](https://docs.rs/hyper) library that can use middleware from
 //! the [Tower](https://docs.rs/tower) project.
 //!

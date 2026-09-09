@@ -40,13 +40,19 @@ impl Implementation {
     pub async fn send_hello(&self, name: String, age: u32) -> Result<Value> {
         Ok(json!({"user": self.id, "name": name, "age": age}))
     }
+
+    #[post("/set/{id}")]
+    pub async fn set_id(&mut self, id: String) -> Result<()> {
+        self.id = id;
+        Ok(())
+    }
 }
 
 #[tokio::main]
 async fn main() {
-    let server = ImplementationServer::router(Arc::new(Implementation {
+    let server = ImplementationServer::router(Implementation {
         id: "Admin".to_owned(),
-    }));
+    });
 
     let address = std::env::var("HELLO_ADDR").unwrap_or_else(|_| "127.0.0.1:3030".into());
     let listener = tokio::net::TcpListener::bind(&address)
@@ -61,10 +67,11 @@ async fn main() {
 It looks very much like
 a [minimal Axum example](https://github.com/tokio-rs/axum/blob/main/examples/hello-world/src/main.rs), except
 instead of handlers as free async functions using extractor patterns, the handlers are generated from ordinary async
-methods and the
-arguments of a shared type (like query in case of GET and body in case of POST) are collected into generated structs.
-The routes themselves
-are specified as macro attributes, as with the `Rocket` framework.
+methods. The arguments of a shared type (like query in case of GET and body in case of POST) are collected into
+generated structs.
+The routes themselves are specified as macro attributes, as with the `Rocket` framework.
+
+Note `&self` implicitly becomes `Arc<Implementation>`.
 
 Some conventions are followed when generating the actual `Axum` handlers. For GET handlers, if a
 parameter is not explicitly from the path, then it comes from the query. Similarly, for a POST handler,
@@ -158,15 +165,16 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }```
 Note how the shared trait is in a shared crate `role-api`. (The last two dependencies are optional)
 
 ```rust
-#[macroni::api(client_feature = "client", server_feature = "server")]
+#[macroni::api]
 pub trait RoleApi {
     // ...
 }
 ```
 
 A client enables only the contract's `client` feature, while a server enables only `server`.
-Using `#[macroni::api]` without feature names generates both client and server unconditionally, except
-in the case where `api` is applied to an `impl` block directly, which is always just server.
+
+Without feature flags, using `#[api(client)]` creates only the client, and `#[api(client,server)]` implements both.
+In the case where `api` is applied to an `impl` block directly, it is alway just server.
 
 The server example deliberately composes the generated router with ordinary `Axum` and `Tower`
 middleware. It demonstrates structured request tracing, request IDs, a JSON-producing timeout,
@@ -193,3 +201,9 @@ It is of course completely possible to generate _just_ a client implementation f
 bodies. For example, `fn hello_post(&self, arg: Args)` will by default generate a wrapper struct around
 the single `arg` - at the code generation point, we really don't know if `Arg` is a struct not
 requiring wrapping. The attribute `#[body(arg)]` indicates that we don't want a wrapper.
+
+## Mutable Receivers
+
+From 0.3.0 onwards, a method may have a `&mut self` receiver. When the impl or trait has at least one of
+these, then the shared state changes. Instead of `Arc<T>` the state becomes `Arc<tokio::sync::RwLock<T>>` and
+any method with a mutable receiver will get write access, otherwise read access.
