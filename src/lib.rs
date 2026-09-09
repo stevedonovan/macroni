@@ -41,9 +41,9 @@
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     let server = ImplementationServer::router(Arc::new(Implementation {
+//!     let server = ImplementationServer::router(Implementation {
 //!         id: "Admin".to_owned(),
-//!     }));
+//!     });
 //!
 //!     let address = std::env::var("HELLO_ADDR").unwrap_or_else(|_| "127.0.0.1:3030".into());
 //!     let listener = tokio::net::TcpListener::bind(&address)
