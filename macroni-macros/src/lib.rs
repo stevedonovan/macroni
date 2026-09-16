@@ -363,9 +363,9 @@ fn expand(
             pub fn router(implementation: #struct_name)
               -> #axum::Router
             {
-                #axum::Router::new()
+                #private::configure_router(#axum::Router::new()
                 #(#routes)*
-                .with_state(#wrapper)
+                .with_state(#wrapper))
             }
         }
     } else {
@@ -376,9 +376,9 @@ fn expand(
             where
                 T: super::#trait_name + Send + Sync + 'static,
             {
-                #axum::Router::new()
+                #private::configure_router(#axum::Router::new()
                 #(#routes)*
-                .with_state(#wrapper)
+                .with_state(#wrapper))
             }
         }
     };

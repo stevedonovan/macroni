@@ -190,6 +190,30 @@ On the client, errors distinguish remote API responses, local transport failures
 protocol failures such as malformed JSON or an incorrect response content type. Non-success status
 codes are preserved even when the remote error envelope is malformed.
 
+## Gzip response compression
+
+Enable the optional `gzip` feature to compress responses from generated routers and
+automatically decode them in generated clients:
+
+```toml
+macroni = { version = "0.3", features = ["gzip"] }
+```
+
+It also works with `default-features = false` and either `server` or `client`.
+Shared API crates can forward it with `gzip = ["macroni/gzip"]`; no changes to
+traits, methods, or macro attributes are needed.
+
+Servers use Tower HTTP's compression layer to negotiate gzip with clients that
+advertise support. Tower's default compression rules apply, so small responses
+may remain uncompressed. Clients automatically advertise gzip support and decode
+responses before JSON parsing. The configured response body limit applies to the
+decompressed bytes. A client supplied through `with_http_client` retains its own
+compression settings. Request bodies are not compressed by this feature.
+
+Compression covers the generated router's routes. To cover additional routes or
+responses produced by outer middleware, apply compression to the final application
+router instead.
+
 ## Other Method Attributes
 
 A method can have a `#[extension(name)]` attribute, where `name` is one of the parameters.

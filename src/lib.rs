@@ -155,6 +155,8 @@ macro_rules! serve {
 #[doc(hidden)]
 pub mod __private {
     #[cfg(feature = "server")]
+    pub use crate::server::configure_router;
+    #[cfg(feature = "server")]
     pub use axum;
     #[cfg(feature = "client")]
     pub use reqwest;
