@@ -343,3 +343,15 @@ tokio::try_join!(first.update(a), second.update(b))?;
 Clones share the HTTP connection pool. A mutable client borrow only restricts that
 local handle; the server's read/write lock controls access to the shared implementation
 and is held for the duration of the method, including across `.await`.
+
+Generated clients treat the base URL's path as a prefix: both
+`http://localhost/api/v1` and `http://localhost/api/v1/` put a route such as
+`/users/{id}` beneath `/api/v1/users/`. Base URLs must not contain a query
+string or fragment.
+
+Path parameters are literal values, percent-encoded by the client; do not
+pre-encode them. Empty values and the exact values `.` and `..` return an
+error before sending a request. Route attributes must start with a single
+`/` and contain no query strings, fragments, backslashes, whitespace,
+percent escapes, or dot segments. Placeholders must occupy a whole segment
+and name a method parameter.

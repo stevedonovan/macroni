@@ -54,6 +54,32 @@ impl ClientConfig {
         &self.base_url
     }
 
+    /// Construct a generated request beneath the base URL's path prefix.
+    ///
+    /// Route templates are validated by the macro. Parameter values are literal
+    /// segments, never URL references.
+    #[doc(hidden)]
+    pub fn request_url(&self, template: &str, parameters: &[(&str, String)]) -> Result<Url> {
+        let mut path = template.to_owned();
+        for (placeholder, value) in parameters {
+            if matches!(value.as_str(), "" | "." | "..") {
+                return Err(Error::protocol(
+                    None,
+                    format!(
+                        "invalid path parameter {placeholder}: empty and dot segments are unsupported"
+                    ),
+                    None,
+                ));
+            }
+            path = path.replace(placeholder, &crate::__private::encode_path_segment(value));
+        }
+        let mut url = self.base_url.clone();
+        let prefix = url.path().trim_end_matches('/');
+        let path = format!("{prefix}{path}");
+        url.set_path(&path);
+        Ok(url)
+    }
+
     /// The shared HTTP client and connection pool.
     pub fn http_client(&self) -> &Client {
         &self.http
@@ -165,6 +191,13 @@ pub fn parse_url(address: &str) -> Result<(Url, Option<std::path::PathBuf>)> {
             return Err(Error::protocol(
                 None,
                 "API base URL must be an absolute HTTP or HTTPS URL",
+                None,
+            ));
+        }
+        if url.query().is_some() || url.fragment().is_some() {
+            return Err(Error::protocol(
+                None,
+                "API base URL must not contain a query string or fragment",
                 None,
             ));
         }

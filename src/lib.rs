@@ -254,6 +254,7 @@ pub mod __private {
             .add(b'#')
             .add(b'%')
             .add(b'/')
+            .add(b'\\')
             .add(b'<')
             .add(b'>')
             .add(b'?')

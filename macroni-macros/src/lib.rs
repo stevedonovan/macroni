@@ -598,13 +598,32 @@ fn placeholders(path: &LitStr) -> syn::Result<Vec<String>> {
             "API paths must begin with `/`",
         ));
     }
+    if value.starts_with("//")
+        || value
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || matches!(c, '?' | '#' | '\\' | '%'))
+        || value
+            .split('/')
+            .any(|segment| matches!(segment, "." | ".."))
+    {
+        return Err(syn::Error::new(
+            path.span(),
+            "API paths must be literal paths without URL syntax, whitespace, percent escapes, or dot segments",
+        ));
+    }
     let mut names = Vec::new();
     for segment in value.split('/') {
-        if segment.starts_with('{') || segment.ends_with('}') {
+        if segment.contains('{') || segment.contains('}') {
             if !(segment.starts_with('{') && segment.ends_with('}') && segment.len() > 2) {
                 return Err(syn::Error::new(path.span(), "invalid path placeholder"));
             }
             let name = segment[1..segment.len() - 1].to_owned();
+            if syn::parse_str::<Ident>(&name).is_err() {
+                return Err(syn::Error::new(
+                    path.span(),
+                    "path placeholders must be parameter names",
+                ));
+            }
             if names.contains(&name) {
                 return Err(syn::Error::new(
                     path.span(),
@@ -726,21 +745,14 @@ fn generate_client_convenience_method(
 
 fn generate_client_request(method: &Method) -> proc_macro2::TokenStream {
     let result_type = &method.result_type;
-    // any path parameters are passed by replacing the placeholders (/path/{a}/{b})
-    // with the percent-encoded values
-    let path_replacements = method
+    let path_parameters = method
         .parameters
         .iter()
         .filter(|p| p.kind == ParmKind::Path)
         .map(|parameter| {
             let name = &parameter.name;
             let placeholder = format!("{{{name}}}");
-            quote! {
-                path = path.replace(
-                    #placeholder,
-                    &::macroni::__private::encode_path_segment(&#name.to_string()),
-                );
-            }
+            quote! { (#placeholder, #name.to_string()) }
         });
     let non_path: Vec<_> = method
         .parameters
@@ -809,15 +821,7 @@ fn generate_client_request(method: &Method) -> proc_macro2::TokenStream {
     let path = &method.path;
 
     quote! {
-            let mut path = #path.to_owned();
-            #(#path_replacements)*
-            let url = self.config.base_url().join(&path).map_err(|error| {
-                ::macroni::Error::protocol(
-                    None,
-                    ::std::format!("invalid generated request URL: {error}"),
-                    None,
-                )
-            })?;
+            let url = self.config.request_url(#path, &[#(#path_parameters),*])?;
             let request = #request.header(
                 ::macroni::__private::reqwest::header::ACCEPT,
                 ::macroni::__private::CONTENT_TYPE,
@@ -1060,6 +1064,43 @@ fn generate_route(method: &Method, config: &Config) -> proc_macro2::TokenStream 
         }
         Verb::Delete => {
             quote!(.route(#path, ::macroni::__private::axum::routing::delete(#handler #generic)))
+        }
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn route_templates_reject_url_syntax_and_malformed_parameters() {
+        for path in [
+            "relative",
+            "//other/route",
+            "/a?b",
+            "/a#b",
+            "/a\\b",
+            "/a/../b",
+            "/./b",
+            "/%2e%2e",
+            "/a b",
+            "/a\nb",
+            "/a{x}",
+            "/{x}suffix",
+            "/{{x}}",
+            "/{*rest}",
+            "/{x}/{x}",
+        ] {
+            assert!(
+                placeholders(&LitStr::new(path, proc_macro2::Span::call_site())).is_err(),
+                "{path:?}"
+            );
+        }
+        for path in ["/", "/users/{id}", "/a..b/", "/hello-world", "/日本語"] {
+            assert!(
+                placeholders(&LitStr::new(path, proc_macro2::Span::call_site())).is_ok(),
+                "{path:?}"
+            );
         }
     }
 }
