@@ -1,4 +1,4 @@
-//! Small middleware helpers that preserve Macaroni's JSON error protocol.
+//! Small middleware helpers that preserve macroni's selected error format.
 
 use crate::Error;
 use axum::extract::{Request, State};
@@ -34,7 +34,7 @@ pub async fn timeout(State(duration): State<Duration>, request: Request, next: N
         })
 }
 
-/// Configure Axum's request body limit. Extractor failures remain JSON responses.
+/// Configure Axum's request body limit. Extractor failures use the selected wire format.
 pub fn body_limit(max_bytes: usize) -> axum::extract::DefaultBodyLimit {
     axum::extract::DefaultBodyLimit::max(max_bytes)
 }

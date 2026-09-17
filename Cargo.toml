@@ -17,15 +17,18 @@ members = [
 [features]
 default = ["client", "server"]
 client = ["dep:percent-encoding", "dep:reqwest"]
-server = ["dep:axum", "dep:tokio", "dep:tracing", "dep:tower-http"]
+server = ["dep:axum", "dep:axum-serde", "dep:tokio", "dep:tracing", "dep:tower-http"]
 gzip = ["tower-http?/compression-gzip", "reqwest?/gzip"]
+msgpack = ["dep:rmp-serde", "axum-serde?/msgpack"]
 
 [dependencies]
 axum = { version = "0.8", optional = true }
+axum-serde = { version = "0.10", optional = true, default-features = false }
 http = "1"
 macroni-macros = { version = "0.3.0", path = "macroni-macros" }
 percent-encoding = { version = "2.3", optional = true }
 reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls"] }
+rmp-serde = { version = "1.3", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.0", optional = true, features = ["full"] }
@@ -37,3 +40,8 @@ axum = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio = { version = "1.0", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 trybuild = "1.0"
+
+[[bench]]
+name = "small_payloads"
+harness = false
+required-features = ["client", "server"]

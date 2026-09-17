@@ -8,8 +8,8 @@ publish = false
 default = []
 client = ["macroni/client"]
 server = ["macroni/server"]
+msgpack = ["macroni/msgpack"]
 
 [dependencies]
 macroni = { path = "../..", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
-

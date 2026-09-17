@@ -190,6 +190,65 @@ On the client, errors distinguish remote API responses, local transport failures
 protocol failures such as malformed JSON or an incorrect response content type. Non-success status
 codes are preserved even when the remote error envelope is malformed.
 
+## Composing generated clients
+
+Use `clients!` to group APIs behind named fields, mirroring merged server routers:
+
+```rust
+use my_api::{Hello, HelloClient, User, UserClient};
+
+macroni::clients! {
+    pub struct AppClient {
+        pub hello: HelloClient,
+        pub user: UserClient,
+    }
+}
+
+let client = AppClient::builder("http://localhost:3000")?
+    .bearer_token(token)?
+    .timeout(Duration::from_secs(5))
+    .build()?;
+
+client.hello.greet("Steve".into()).await?;
+client.user.get_by_id(42).await?;
+```
+
+`AppClient::new(address)` uses the usual defaults. Field names and visibility are
+explicit, and client types may be qualified paths from other modules or crates.
+Keep the corresponding traits in scope to call their methods. The aggregate and
+its fields can be cloned and used independently.
+
+To share configuration across aggregates or individual clients, build it once:
+
+```rust
+let config = macroni::ClientConfig::builder(address)?
+    .bearer_token(token)?
+    .response_body_limit(2 * 1024 * 1024)
+    .build()?;
+
+let app = AppClient::from_config(config.clone());
+let hello = HelloClient::from_config(config);
+```
+
+Configuration includes the base address, authorization/default headers, timeouts,
+and decoded response body limit. Clones share one Reqwest client and its connection
+pool. Each generated client's existing `new`, `builder`, and `with_http_client`
+constructors remain available; builder settings are now implemented in macroni's
+runtime library. The generated `HelloClientBuilder` name remains available as a
+type alias. Aggregate clients also implement `From<ClientConfig>`.
+
+An absolute Unix socket path, such as `/tmp/my-api.sock`, works with `new` or
+`builder` for both aggregates and individual clients. To use a custom Reqwest
+client, create the shared config with `ClientConfig::with_http_client(base_url, http)`.
+That constructor expects an HTTP(S) URL and preserves the supplied client's
+settings; for custom UDS connections, configure `.unix_socket(path)` on Reqwest
+and use `http://localhost` as the URL. `config.with_response_body_limit(bytes)`
+can adjust the limit while retaining the shared HTTP client.
+
+Composition works with JSON, MessagePack, and gzip without changing the declaration.
+It requires macroni's `client` feature; shared crates should gate a `clients!`
+invocation with `#[cfg(feature = "client")]` when supporting server-only builds.
+
 ## Gzip response compression
 
 Enable the optional `gzip` feature to compress responses from generated routers and
@@ -213,6 +272,45 @@ compression settings. Request bodies are not compressed by this feature.
 Compression covers the generated router's routes. To cover additional routes or
 responses produced by outer middleware, apply compression to the final application
 router instead.
+
+## MessagePack encoding
+
+Enable `msgpack` on both the client and server to use MessagePack in place of JSON:
+
+```toml
+macroni = { version = "0.3", features = ["msgpack"] }
+```
+
+This switches request bodies, successful responses, and macroni error responses
+to `application/msgpack`. Paths and query parameters keep their existing encoding,
+and `#[body(arg)]` still sends the argument directly. Structs use named fields
+(MessagePack maps), including generated parameter structs and error envelopes.
+Types continue to use Serde's `Serialize` and `Deserialize` traits.
+
+The format is selected at build time for the macroni dependency, not negotiated
+per request. Both endpoints must use the same format; enabling `msgpack` does not
+retain JSON request-body support. Cargo features are additive, so enabling it
+anywhere in a dependency graph selects MessagePack for that macroni build.
+
+The feature works with client-only and server-only builds and combines with
+`gzip`. Shared API crates can forward it with `msgpack = ["macroni/msgpack"]`
+(as in `examples/api`). No macro attributes or application methods need to change.
+Externally supplied Reqwest clients work too: macroni handles body encoding and
+decoding itself.
+
+Servers use the `axum-serde` MessagePack extractor and preserve rejection status
+codes in macroni's error envelope (`invalid_msgpack` for body rejections). Request
+body limits and client response limits still apply. Runtime library helpers own
+format selection; generated code contains no MessagePack feature checks.
+
+## Comparing JSON and MessagePack performance
+
+Run `python3 scripts/bench-formats.py` to compare small payloads using optimized
+builds of the generated client and server. It measures encoded body sizes,
+serialization cost, HTTP throughput, and latency at concurrency 1 and 16, with
+repeated samples and gzip disabled. Add `--transports tcp uds` to compare localhost
+TCP with Unix domain sockets for both formats. See the [benchmark guide](benches/README.md)
+for the workload, configuration, and interpretation of results.
 
 ## Other Method Attributes
 

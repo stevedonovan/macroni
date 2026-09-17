@@ -1,5 +1,5 @@
 #[cfg(feature = "server")]
-use axum::Json;
+use crate::extract::Payload;
 #[cfg(feature = "server")]
 use axum::response::{IntoResponse, Response};
 use http::StatusCode;
@@ -178,7 +178,7 @@ impl From<reqwest::Error> for Error {
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
         match self {
-            Self::User { status, response } => (status, Json(response)).into_response(),
+            Self::User { status, response } => (status, Payload(response)).into_response(),
             Self::Server { message, body } => {
                 let body = body.unwrap_or_default();
                 tracing::error!(error = %message, body = %body, "internal API error");
@@ -200,7 +200,7 @@ impl IntoResponse for Error {
 fn internal_response() -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse {
+        Payload(ErrorResponse {
             code: "internal_server_error".into(),
             message: "An internal server error occurred".into(),
             details: None,
