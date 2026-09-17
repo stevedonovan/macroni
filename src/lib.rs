@@ -1,5 +1,8 @@
 //! Define JSON-over-HTTP APIs with Axum and (optionally) generate a client
 //! using Reqwest.
+//! Enable `msgpack` on both endpoints to use MessagePack bodies and error responses
+//! instead of JSON. Path and query encoding are unchanged. The optional `gzip`
+//! feature enables response compression with either format.
 //!
 //! [Axum](https://docs.rs/axum) is a powerful and flexible Web framework by the Tokio team built
 //! on the lower-level [Hyper](https://docs.rs/hyper) library that can use middleware from
@@ -87,6 +90,10 @@
 //!
 #[cfg(feature = "client")]
 mod client;
+#[cfg(feature = "client")]
+mod client_config;
+#[cfg(any(feature = "client", feature = "server"))]
+mod codec;
 mod error;
 #[cfg(feature = "server")]
 mod extract;
@@ -95,6 +102,8 @@ pub mod server;
 
 #[cfg(feature = "server")]
 pub use axum;
+#[cfg(feature = "client")]
+pub use client_config::{ClientConfig, ClientConfigBuilder};
 pub use error::{Error, ErrorResponse, Result};
 pub use http::StatusCode;
 pub use macroni_macros::api;
@@ -102,6 +111,72 @@ pub use serde;
 pub use serde_json;
 #[cfg(feature = "server")]
 pub use tokio;
+
+/// Compose generated clients with one address, configuration, and connection pool.
+///
+/// ```rust,no_run
+/// #[macroni::api(client)]
+/// pub trait Hello {
+///     #[get("/hello")]
+///     async fn greet(&self, name: String) -> macroni::Result<String>;
+/// }
+/// #[macroni::api(client)]
+/// pub trait User {
+///     #[get("/users/{id}")]
+///     async fn get_by_id(&self, id: u32) -> macroni::Result<String>;
+/// }
+/// macroni::clients! {
+///     pub struct AppClient {
+///         pub hello: HelloClient,
+///         pub user: UserClient,
+///     }
+/// }
+/// # async fn example() -> macroni::Result<()> {
+/// let client = AppClient::builder("http://localhost:3000")?
+///     .bearer_token("token")?
+///     .build()?;
+/// let greeting = client.hello.greet("Steve".into()).await?;
+/// # Ok(()) }
+/// # fn main() {}
+/// ```
+///
+/// Fields may use qualified paths to clients from other modules or crates.
+/// Keep the corresponding API traits in scope when calling their methods.
+/// The aggregate implements `Clone`, `Debug`, and `From<ClientConfig>`.
+#[cfg(feature = "client")]
+#[macro_export]
+macro_rules! clients {
+    ($vis:vis struct $name:ident {
+        $($field_vis:vis $field:ident: $client:ty),+ $(,)?
+    }) => {
+        #[derive(Clone, Debug)]
+        $vis struct $name {
+            $($field_vis $field: $client),+
+        }
+
+        impl $name {
+            $vis fn new(address: impl ::core::convert::AsRef<str>) -> $crate::Result<Self> {
+                Ok(Self::from_config($crate::ClientConfig::new(address)?))
+            }
+
+            $vis fn builder(address: impl ::core::convert::AsRef<str>)
+                -> $crate::Result<$crate::ClientConfigBuilder<Self>>
+            {
+                $crate::ClientConfigBuilder::new(address)
+            }
+
+            $vis fn from_config(config: $crate::ClientConfig) -> Self {
+                Self { $($field: <$client>::from_config(config.clone())),+ }
+            }
+        }
+
+        impl ::core::convert::From<$crate::ClientConfig> for $name {
+            fn from(config: $crate::ClientConfig) -> Self {
+                Self::from_config(config)
+            }
+        }
+    };
+}
 
 /// A TCP listener
 #[cfg(feature = "server")]
@@ -163,9 +238,13 @@ pub mod __private {
     pub use serde;
 
     #[cfg(feature = "client")]
-    pub use crate::client::decode_response;
+    pub use crate::client::{decode_response, encode_request};
+    #[cfg(feature = "client")]
+    pub use crate::client_config::parse_url;
+    #[cfg(any(feature = "client", feature = "server"))]
+    pub use crate::codec::CONTENT_TYPE;
     #[cfg(feature = "server")]
-    pub use crate::extract::{Json, Path, Query};
+    pub use crate::extract::{Path, Payload, Query};
 
     #[cfg(feature = "client")]
     pub fn encode_path_segment(value: &str) -> String {
@@ -183,27 +262,5 @@ pub mod __private {
             .add(b'}');
 
         percent_encoding::utf8_percent_encode(value, PATH_SEGMENT).to_string()
-    }
-
-    #[cfg(feature = "client")]
-    pub fn parse_url(base_url: &str) -> super::Result<(reqwest::Url, Option<std::path::PathBuf>)> {
-        if base_url.starts_with("/") {
-            Ok((
-                "http://localhost".parse().unwrap(),
-                Some(std::path::PathBuf::from(base_url)),
-            ))
-        } else {
-            let base_url = reqwest::Url::parse(base_url).map_err(|error| {
-                super::Error::protocol(None, format!("invalid API base URL: {error}"), None)
-            })?;
-            if !matches!(base_url.scheme(), "http" | "https") || base_url.cannot_be_a_base() {
-                return Err(super::Error::protocol(
-                    None,
-                    "API base URL must be an absolute HTTP or HTTPS URL",
-                    None,
-                ));
-            }
-            Ok((base_url, None))
-        }
     }
 }
