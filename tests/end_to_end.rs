@@ -1,4 +1,5 @@
 use axum::response::IntoResponse;
+mod common;
 use macroni::{Error, Result, api};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -246,17 +247,18 @@ async fn generated_client_and_router_round_trip() {
     let malformed = reqwest::Client::new()
         .post(format!("http://{address}/role/admin"))
         .header("authorization", "Bearer test-secret")
-        .header("content-type", "application/json")
-        .body("not JSON")
+        .header("content-type", macroni::__private::CONTENT_TYPE)
+        .body(vec![0xc1]) // Invalid in both JSON and MessagePack.
         .send()
         .await
         .expect("send malformed request");
-    assert_eq!(malformed.status(), reqwest::StatusCode::BAD_REQUEST);
-    let malformed_error = malformed
-        .json::<macroni::ErrorResponse>()
-        .await
-        .expect("extractor rejection should be JSON");
-    assert_eq!(malformed_error.code, "invalid_json");
+    #[cfg(not(feature = "msgpack"))]
+    let (status, code) = (reqwest::StatusCode::BAD_REQUEST, "invalid_json");
+    #[cfg(feature = "msgpack")]
+    let (status, code) = (reqwest::StatusCode::UNPROCESSABLE_ENTITY, "invalid_msgpack");
+    assert_eq!(malformed.status(), status);
+    let malformed_error = common::decode::<macroni::ErrorResponse>(malformed).await;
+    assert_eq!(malformed_error.code, code);
 
     server.abort();
 }
