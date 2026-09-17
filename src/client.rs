@@ -1,28 +1,39 @@
-use crate::{Error, ErrorResponse, Result};
+use crate::{Error, ErrorResponse, Result, codec};
 use http::header::CONTENT_TYPE;
 use reqwest::Response;
 use serde::de::DeserializeOwned;
 
 const MAX_ERROR_EXCERPT_BYTES: usize = 4 * 1024;
 
+pub fn encode_request<T: serde::Serialize + ?Sized>(
+    request: reqwest::RequestBuilder,
+    payload: &T,
+) -> Result<reqwest::RequestBuilder> {
+    let body = codec::encode(payload).map_err(|error| {
+        Error::protocol(
+            None,
+            format!("cannot encode {} request: {error}", codec::FORMAT),
+            None,
+        )
+    })?;
+    Ok(request.header(CONTENT_TYPE, codec::CONTENT_TYPE).body(body))
+}
+
 pub async fn decode_response<T: DeserializeOwned>(
     mut response: Response,
     max_response_bytes: usize,
 ) -> Result<T> {
     let status = response.status();
-    let is_json = response
+    let supported_content_type = response
         .headers()
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            let media_type = value.split(';').next().unwrap_or_default().trim();
-            media_type == "application/json" || media_type.ends_with("+json")
-        });
+        .is_some_and(codec::matches_content_type);
 
-    if !is_json {
+    if !supported_content_type {
         return Err(Error::protocol(
             Some(status),
-            "response Content-Type is not JSON",
+            format!("response Content-Type is not {}", codec::FORMAT),
             None,
         ));
     }
@@ -51,19 +62,19 @@ pub async fn decode_response<T: DeserializeOwned>(
     }
 
     if status.is_success() {
-        serde_json::from_slice(&body).map_err(|error| {
+        codec::decode(&body).map_err(|error| {
             Error::protocol(
                 Some(status),
-                format!("invalid JSON success response: {error}"),
+                format!("invalid {} success response: {error}", codec::FORMAT),
                 body_excerpt(&body),
             )
         })
     } else {
-        match serde_json::from_slice::<ErrorResponse>(&body) {
+        match codec::decode::<ErrorResponse>(&body) {
             Ok(response) => Err(Error::User { status, response }),
             Err(error) => Err(Error::protocol(
                 Some(status),
-                format!("invalid JSON error response: {error}"),
+                format!("invalid {} error response: {error}", codec::FORMAT),
                 body_excerpt(&body),
             )),
         }
