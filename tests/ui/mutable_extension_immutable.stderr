@@ -1,0 +1,10 @@
+error[E0596]: cannot borrow `client` as mutable, as it is not declared as mutable
+  --> tests/ui/mutable_extension_immutable.rs:11:5
+   |
+11 |     client.increment().await.unwrap();
+   |     ^^^^^^ cannot borrow as mutable
+   |
+help: consider changing this to be mutable
+   |
+10 | async fn requires_mutable_binding(mut client: CounterClient) {
+   |                                   +++

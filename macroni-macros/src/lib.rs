@@ -673,6 +673,7 @@ fn generated_type_name(method: &Method, suffix: &str) -> Ident {
 
 fn generate_client_method(method: &Method) -> proc_macro2::TokenStream {
     let name = &method.name;
+    let mutable = method.mutable_receiver.then(|| quote!(mut));
     let result_type = &method.result_type;
     let arguments = method.parameters.iter().map(|parameter| {
         let name = &parameter.name;
@@ -690,7 +691,7 @@ fn generate_client_method(method: &Method) -> proc_macro2::TokenStream {
     let request_body = generate_client_request(method);
 
     quote! {
-        async fn #name(&self, #(#arguments),*) -> ::macroni::Result<#result_type> {
+        async fn #name(&#mutable self, #(#arguments),*) -> ::macroni::Result<#result_type> {
             #(#ignored_extensions)*
             #request_body
         }
@@ -703,6 +704,7 @@ fn generate_client_convenience_method(
 ) -> Option<proc_macro2::TokenStream> {
     method.parameters.iter().any(|p| p.kind == ParmKind::Extension).then(|| {
         let name = &method.name;
+        let mutable = method.mutable_receiver.then(|| quote!(mut));
         let result_type = &method.result_type;
         let arguments = method
             .parameters
@@ -715,7 +717,7 @@ fn generate_client_convenience_method(
             });
         let request_body = generate_client_request(method);
         quote! {
-            #visibility async fn #name(&self, #(#arguments),*) -> ::macroni::Result<#result_type> {
+            #visibility async fn #name(&#mutable self, #(#arguments),*) -> ::macroni::Result<#result_type> {
                 #request_body
             }
         }

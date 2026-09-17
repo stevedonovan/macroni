@@ -329,3 +329,17 @@ requiring wrapping. The attribute `#[body(arg)]` indicates that we don't want a 
 From 0.3.0 onwards, a method may have a `&mut self` receiver. When the impl or trait has at least one of
 these, then the shared state changes. Instead of `Arc<T>` the state becomes `Arc<tokio::sync::RwLock<T>>` and
 any method with a mutable receiver will get write access, otherwise read access.
+
+Generated clients preserve the trait's receivers, including on convenience methods
+that omit extension arguments. Calling a mutable method therefore requires a mutable
+client binding. For concurrent calls, clone the client into separate mutable handles:
+
+```rust
+let mut first = client.clone();
+let mut second = client.clone();
+tokio::try_join!(first.update(a), second.update(b))?;
+```
+
+Clones share the HTTP connection pool. A mutable client borrow only restricts that
+local handle; the server's read/write lock controls access to the shared implementation
+and is held for the duration of the method, including across `.await`.
