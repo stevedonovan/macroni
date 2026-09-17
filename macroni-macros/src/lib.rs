@@ -204,140 +204,54 @@ fn expand(
 
     let client_impl = if config.client_feature || config.uses_features {
         quote! {
-                #client_cfg
-                #[derive(Clone, Debug)]
-                #visibility struct #client_name {
-                    base_url: #private::reqwest::Url,
+            #client_cfg
+            #[derive(Clone, Debug)]
+            #visibility struct #client_name {
+                config: ::macroni::ClientConfig,
+            }
+
+            #client_cfg
+            #visibility type #client_builder_name = ::macroni::ClientConfigBuilder<#client_name>;
+
+            #client_cfg
+            impl #client_name {
+                #visibility fn new(address: impl ::core::convert::AsRef<str>)
+                    -> ::macroni::Result<Self>
+                {
+                    Ok(Self::from_config(::macroni::ClientConfig::new(address)?))
+                }
+
+                #visibility fn builder(address: impl ::core::convert::AsRef<str>)
+                    -> ::macroni::Result<#client_builder_name>
+                {
+                    #client_builder_name::new(address)
+                }
+
+                #visibility fn from_config(config: ::macroni::ClientConfig) -> Self {
+                    Self { config }
+                }
+
+                #visibility fn with_http_client(
+                    base_url: impl ::core::convert::AsRef<str>,
                     http: #private::reqwest::Client,
-                    max_response_bytes: usize,
+                ) -> ::macroni::Result<Self> {
+                    Ok(Self::from_config(::macroni::ClientConfig::with_http_client(base_url, http)?))
                 }
 
-                #client_cfg
-                impl #client_name {
-                    #visibility fn new(base_url: impl ::core::convert::AsRef<str>)
-                        -> ::macroni::Result<Self>
-                    {
-                        Self::builder(base_url)?.build()
-                    }
+                #(#client_convenience_methods)*
+            }
 
-                    #visibility fn builder(base_url: impl ::core::convert::AsRef<str>)
-                        -> ::macroni::Result<#client_builder_name>
-                    {
-                        #client_builder_name::new(base_url)
-                    }
-
-                    #visibility fn with_http_client(
-                        base_url: impl ::core::convert::AsRef<str>,
-                        http: #private::reqwest::Client,
-                    ) -> ::macroni::Result<Self> {
-                        let base_url = #private::reqwest::Url::parse(base_url.as_ref())
-                            .map_err(|error| ::macroni::Error::protocol(
-                                None,
-                                ::std::format!("invalid API base URL: {error}"),
-                                None,
-                            ))?;
-                        Ok(Self {
-                            base_url,
-                            http,
-                            max_response_bytes: 8 * 1024 * 1024,
-                        })
-                    }
-
-                    #(#client_convenience_methods)*
+            #client_cfg
+            impl ::core::convert::From<::macroni::ClientConfig> for #client_name {
+                fn from(config: ::macroni::ClientConfig) -> Self {
+                    Self::from_config(config)
                 }
+            }
 
-                #client_cfg
-                #visibility struct #client_builder_name {
-                    base_url: #private::reqwest::Url,
-                    http: #private::reqwest::ClientBuilder,
-                    default_headers: #private::reqwest::header::HeaderMap,
-                    max_response_bytes: usize,
-                }
-
-                #client_cfg
-                impl #client_builder_name {
-                    fn new(base_url: impl ::core::convert::AsRef<str>) -> ::macroni::Result<Self> {
-                        let (base_url,socket) = #private::parse_url(base_url.as_ref())?;
-                        let mut http = #private::reqwest::Client::builder()
-                                .timeout(::std::time::Duration::from_secs(10))
-                                .connect_timeout(::std::time::Duration::from_secs(2));
-                        if let Some(socket) = socket {
-                            http = http.unix_socket(socket);
-                        }
-                        Ok(Self {
-                            base_url,
-                            http,
-                            default_headers: #private::reqwest::header::HeaderMap::new(),
-                            max_response_bytes: 8 * 1024 * 1024,
-                        })
-                    }
-
-                    #visibility fn timeout(mut self, timeout: ::std::time::Duration) -> Self {
-                        self.http = self.http.timeout(timeout);
-                        self
-                    }
-
-                    #visibility fn connect_timeout(mut self, timeout: ::std::time::Duration) -> Self {
-                        self.http = self.http.connect_timeout(timeout);
-                        self
-                    }
-
-                    #visibility fn default_headers(
-                        mut self,
-                        headers: #private::reqwest::header::HeaderMap,
-                    ) -> Self {
-                        self.default_headers.extend(headers);
-                        self
-                    }
-
-                    #visibility fn authorization(
-                        mut self,
-                        mut value: #private::reqwest::header::HeaderValue,
-                    ) -> Self {
-                        value.set_sensitive(true);
-                        self.default_headers.insert(
-                            #private::reqwest::header::AUTHORIZATION,
-                            value,
-                        );
-                        self
-                    }
-
-                    #visibility fn bearer_token(
-                        self,
-                        token: impl ::core::convert::AsRef<str>,
-                    ) -> ::macroni::Result<Self> {
-                        let value = #private::reqwest::header::HeaderValue::from_str(
-                            &::std::format!("Bearer {}", token.as_ref()),
-                        ).map_err(|error| ::macroni::Error::protocol(
-                            None,
-                            ::std::format!("invalid bearer token: {error}"),
-                            None,
-                        ))?;
-                        Ok(self.authorization(value))
-                    }
-
-                    #visibility fn response_body_limit(mut self, max_bytes: usize) -> Self {
-                        self.max_response_bytes = max_bytes;
-                        self
-                    }
-
-                    #visibility fn build(self) -> ::macroni::Result<#client_name> {
-                        let http = self.http
-                            .default_headers(self.default_headers)
-                            .build()
-                            .map_err(::macroni::Error::from)?;
-                        Ok(#client_name {
-                            base_url: self.base_url,
-                            http,
-                            max_response_bytes: self.max_response_bytes,
-                        })
-                    }
-                }
-
-                #client_cfg
-                impl super::#trait_name for #client_name {
-                    #(#client_methods)*
-                }
+            #client_cfg
+            impl super::#trait_name for #client_name {
+                #(#client_methods)*
+            }
         }
     } else {
         quote! {}
@@ -864,30 +778,30 @@ fn generate_client_request(method: &Method) -> proc_macro2::TokenStream {
     // Note the conventions here: GET & DELETE get via query, the rest via body.
     // We are using the generated structs to marshall the payload fields.
     let request = match (method.verb, non_path.is_empty()) {
-        (Verb::Get, true) => quote!(self.http.get(url)),
+        (Verb::Get, true) => quote!(self.config.http_client().get(url)),
         (Verb::Get, false) => quote!({
             #set_payload
-            self.http.get(url).query(&payload)
+            self.config.http_client().get(url).query(&payload)
         }),
-        (Verb::Post, true) => quote!(self.http.post(url)),
+        (Verb::Post, true) => quote!(self.config.http_client().post(url)),
         (Verb::Post, false) => quote!({
             #set_payload
-            self.http.post(url).json(&payload)
+            ::macroni::__private::encode_request(self.config.http_client().post(url), &payload)?
         }),
-        (Verb::Put, true) => quote!(self.http.put(url)),
+        (Verb::Put, true) => quote!(self.config.http_client().put(url)),
         (Verb::Put, false) => quote!({
             #set_payload
-            self.http.put(url).json(&payload)
+            ::macroni::__private::encode_request(self.config.http_client().put(url), &payload)?
         }),
-        (Verb::Patch, true) => quote!(self.http.patch(url)),
+        (Verb::Patch, true) => quote!(self.config.http_client().patch(url)),
         (Verb::Patch, false) => quote!({
             #set_payload
-            self.http.patch(url).json(&payload)
+            ::macroni::__private::encode_request(self.config.http_client().patch(url), &payload)?
         }),
-        (Verb::Delete, true) => quote!(self.http.delete(url)),
+        (Verb::Delete, true) => quote!(self.config.http_client().delete(url)),
         (Verb::Delete, false) => quote!({
             #set_payload
-            self.http.delete(url).query(&payload)
+            self.config.http_client().delete(url).query(&payload)
         }),
     };
     let path = &method.path;
@@ -895,7 +809,7 @@ fn generate_client_request(method: &Method) -> proc_macro2::TokenStream {
     quote! {
             let mut path = #path.to_owned();
             #(#path_replacements)*
-            let url = self.base_url.join(&path).map_err(|error| {
+            let url = self.config.base_url().join(&path).map_err(|error| {
                 ::macroni::Error::protocol(
                     None,
                     ::std::format!("invalid generated request URL: {error}"),
@@ -904,12 +818,12 @@ fn generate_client_request(method: &Method) -> proc_macro2::TokenStream {
             })?;
             let request = #request.header(
                 ::macroni::__private::reqwest::header::ACCEPT,
-                "application/json",
+                ::macroni::__private::CONTENT_TYPE,
             );
             let response = request.send().await.map_err(::macroni::Error::from)?;
             ::macroni::__private::decode_response::<#result_type>(
                 response,
-                self.max_response_bytes,
+                self.config.response_body_limit(),
             ).await
     }
 }
@@ -919,7 +833,7 @@ fn generate_client_request(method: &Method) -> proc_macro2::TokenStream {
 //  - the implementation as State
 //  - any Extract parameters
 //  - maybe a Path parameter
-//  - either Query or Json parameter depending on whether we are GET or POST, etc
+//  - either Query or Payload parameter depending on whether we are GET or POST, etc
 // The original formal parameters are grouped together in synthesized ser/de structs,
 // so e.g. we will have handler parameters like `Query(Ty{name,id}): Query<Ty>`
 // where `Ty` is the synthesized struct name.
@@ -987,7 +901,7 @@ fn generate_handler(
         let extractor = if method.verb.uses_query() {
             "Query"
         } else {
-            "Json"
+            "Payload"
         };
         let extractor = extractor_path(extractor);
         if !has_struct {
@@ -1043,10 +957,10 @@ fn generate_handler(
                 #path_extractor
                 #(#extension_extractors)*
                 #payload_extractor
-            ) -> ::macroni::Result<#axum::Json<#result_type>>
+            ) -> ::macroni::Result<::macroni::__private::Payload<#result_type>>
             {
                 let result = #accessor.#method_name(#(#call_arguments),*).await?;
-                Ok(#axum::Json(result))
+                Ok(::macroni::__private::Payload(result))
             }
         }
     } else {
@@ -1058,13 +972,13 @@ fn generate_handler(
             #path_extractor
             #(#extension_extractors)*
             #payload_extractor
-        ) -> ::macroni::Result<#axum::Json<#result_type>>
+        ) -> ::macroni::Result<::macroni::__private::Payload<#result_type>>
             where
                 T: super::#trait_name + Send + Sync + 'static,
         {
             use super::#trait_name as _;
             let result = #accessor.#method_name(#(#call_arguments),*).await?;
-            Ok(#axum::Json(result))
+            Ok(::macroni::__private::Payload(result))
         }
 
         }
