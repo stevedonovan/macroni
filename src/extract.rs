@@ -36,9 +36,10 @@ where
     }
 }
 
-pub struct Json<T>(pub T);
+/// Request and response body in the format selected by macroni's features.
+pub struct Payload<T>(pub T);
 
-impl<S, T> FromRequest<S> for Json<T>
+impl<S, T> FromRequest<S> for Payload<T>
 where
     T: serde::de::DeserializeOwned,
     S: Send + Sync,
@@ -49,9 +50,33 @@ where
         request: axum::extract::Request,
         state: &S,
     ) -> Result<Self, Self::Rejection> {
-        axum::Json::<T>::from_request(request, state)
+        #[cfg(not(feature = "msgpack"))]
+        return axum::Json::<T>::from_request(request, state)
             .await
             .map(|axum::Json(value)| Self(value))
-            .map_err(|error| Error::user(error.status(), "invalid_json", error.body_text()))
+            .map_err(|error| Error::user(error.status(), "invalid_json", error.body_text()));
+
+        #[cfg(feature = "msgpack")]
+        return axum_serde::MsgPack::<T>::from_request(request, state)
+            .await
+            .map(|axum_serde::MsgPack(value)| Self(value))
+            .map_err(|error| {
+                use axum::response::IntoResponse;
+                let message = error.to_string();
+                Error::user(error.into_response().status(), "invalid_msgpack", message)
+            });
+    }
+}
+
+impl<T: serde::Serialize> axum::response::IntoResponse for Payload<T> {
+    fn into_response(self) -> axum::response::Response {
+        match crate::codec::encode(&self.0) {
+            Ok(bytes) => (
+                [(http::header::CONTENT_TYPE, crate::codec::CONTENT_TYPE)],
+                bytes,
+            )
+                .into_response(),
+            Err(error) => Error::server("response serialization failed", error).into_response(),
+        }
     }
 }
