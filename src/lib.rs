@@ -1,8 +1,5 @@
 //! Define JSON-over-HTTP APIs with Axum and (optionally) generate a client
 //! using Reqwest.
-//! Enable `msgpack` on both endpoints to use MessagePack bodies and error responses
-//! instead of JSON. Path and query encoding are unchanged. The optional `gzip`
-//! feature enables response compression with either format.
 //!
 //! [Axum](https://docs.rs/axum) is a powerful and flexible Web framework by the Tokio team built
 //! on the lower-level [Hyper](https://docs.rs/hyper) library that can use middleware from
@@ -88,6 +85,9 @@
 //! ```
 //! (Please see the [examples](https://github.com/stevedonovan/macroni/examples))
 //!
+//! Enable `msgpack` on both endpoints to use MessagePack bodies and error responses
+//! instead of JSON. Path and query encoding are unchanged. The optional `gzip`
+//! feature enables response compression with either format.
 #[cfg(feature = "client")]
 mod client;
 #[cfg(feature = "client")]

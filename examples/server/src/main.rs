@@ -9,7 +9,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::sleep;
-use tower_http::request_id::{MakeRequestUuid, SetRequestIdLayer};
+use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
 
 // #[derive(Default)]
@@ -130,11 +130,7 @@ async fn main() {
 
     let app = RoleApiServer::router(RoleService::new())
         .layer(macroni::server::body_limit(1024 * 1024))
-        // .layer(middleware::from_fn_with_state(
-        //     Duration::from_secs(10),
-        //     macroni::server::timeout,
-        // ))
-        // .layer(PropagateRequestIdLayer::x_request_id())
+        .layer(PropagateRequestIdLayer::x_request_id())
         .layer(TraceLayer::new_for_http())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(middleware::from_fn(authenticate));

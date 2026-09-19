@@ -71,7 +71,7 @@ methods. The arguments of a shared type (like query in case of GET and body in c
 generated structs.
 The routes themselves are specified as macro attributes, as with the `Rocket` framework.
 
-Note `&self` implicitly becomes `Arc<Implementation>`.
+Note how in this case `&self` implicitly becomes `Arc<Implementation>`.
 
 Some conventions are followed when generating the actual `Axum` handlers. For GET handlers, if a
 parameter is not explicitly from the path, then it comes from the query. Similarly, for a POST handler,
@@ -174,7 +174,7 @@ pub trait RoleApi {
 A client enables only the contract's `client` feature, while a server enables only `server`.
 
 Without feature flags, using `#[api(client)]` creates only the client, and `#[api(client,server)]` implements both.
-In the case where `api` is applied to an `impl` block directly, it is alway just server.
+In the case where `api` is applied to an `impl` block directly, it is always just server.
 
 The server example deliberately composes the generated router with ordinary `Axum` and `Tower`
 middleware. It demonstrates structured request tracing, request IDs, a JSON-producing timeout,
@@ -204,50 +204,14 @@ macroni::clients! {
     }
 }
 
-let client = AppClient::builder("http://localhost:3000")?
-    .bearer_token(token)?
-    .timeout(Duration::from_secs(5))
-    .build()?;
+let client = AppClient::builder("http://localhost:3000") ?
+.bearer_token(token) ?
+.timeout(Duration::from_secs(5))
+.build() ?;
 
 client.hello.greet("Steve".into()).await?;
 client.user.get_by_id(42).await?;
 ```
-
-`AppClient::new(address)` uses the usual defaults. Field names and visibility are
-explicit, and client types may be qualified paths from other modules or crates.
-Keep the corresponding traits in scope to call their methods. The aggregate and
-its fields can be cloned and used independently.
-
-To share configuration across aggregates or individual clients, build it once:
-
-```rust
-let config = macroni::ClientConfig::builder(address)?
-    .bearer_token(token)?
-    .response_body_limit(2 * 1024 * 1024)
-    .build()?;
-
-let app = AppClient::from_config(config.clone());
-let hello = HelloClient::from_config(config);
-```
-
-Configuration includes the base address, authorization/default headers, timeouts,
-and decoded response body limit. Clones share one Reqwest client and its connection
-pool. Each generated client's existing `new`, `builder`, and `with_http_client`
-constructors remain available; builder settings are now implemented in macroni's
-runtime library. The generated `HelloClientBuilder` name remains available as a
-type alias. Aggregate clients also implement `From<ClientConfig>`.
-
-An absolute Unix socket path, such as `/tmp/my-api.sock`, works with `new` or
-`builder` for both aggregates and individual clients. To use a custom Reqwest
-client, create the shared config with `ClientConfig::with_http_client(base_url, http)`.
-That constructor expects an HTTP(S) URL and preserves the supplied client's
-settings; for custom UDS connections, configure `.unix_socket(path)` on Reqwest
-and use `http://localhost` as the URL. `config.with_response_body_limit(bytes)`
-can adjust the limit while retaining the shared HTTP client.
-
-Composition works with JSON, MessagePack, and gzip without changing the declaration.
-It requires macroni's `client` feature; shared crates should gate a `clients!`
-invocation with `#[cfg(feature = "client")]` when supporting server-only builds.
 
 ## Gzip response compression
 
@@ -282,26 +246,21 @@ macroni = { version = "0.3", features = ["msgpack"] }
 ```
 
 This switches request bodies, successful responses, and macroni error responses
-to `application/msgpack`. Paths and query parameters keep their existing encoding,
-and `#[body(arg)]` still sends the argument directly. Structs use named fields
+to `application/msgpack`. Paths and query parameters keep their existing encoding;
+Bodies use named fields
 (MessagePack maps), including generated parameter structs and error envelopes.
 Types continue to use Serde's `Serialize` and `Deserialize` traits.
 
 The format is selected at build time for the macroni dependency, not negotiated
-per request. Both endpoints must use the same format; enabling `msgpack` does not
-retain JSON request-body support. Cargo features are additive, so enabling it
-anywhere in a dependency graph selects MessagePack for that macroni build.
-
-The feature works with client-only and server-only builds and combines with
+per request. The feature works with client-only and server-only builds and combines with
 `gzip`. Shared API crates can forward it with `msgpack = ["macroni/msgpack"]`
 (as in `examples/api`). No macro attributes or application methods need to change.
 Externally supplied Reqwest clients work too: macroni handles body encoding and
 decoding itself.
 
-Servers use the `axum-serde` MessagePack extractor and preserve rejection status
-codes in macroni's error envelope (`invalid_msgpack` for body rejections). Request
-body limits and client response limits still apply. Runtime library helpers own
-format selection; generated code contains no MessagePack feature checks.
+Under the hood, the main change is to replace our `Json` extractor with a `Payload` extractor,
+which is either defined for JSON or `msgpack`. This makes it very straightforward to implement
+other wire formats based on feature flags.
 
 ## Comparing JSON and MessagePack performance
 
@@ -330,8 +289,7 @@ From 0.3.0 onwards, a method may have a `&mut self` receiver. When the impl or t
 these, then the shared state changes. Instead of `Arc<T>` the state becomes `Arc<tokio::sync::RwLock<T>>` and
 any method with a mutable receiver will get write access, otherwise read access.
 
-Generated clients preserve the trait's receivers, including on convenience methods
-that omit extension arguments. Calling a mutable method therefore requires a mutable
+Generated clients preserve the trait's receivers, so calling a mutable method therefore requires a mutable
 client binding. For concurrent calls, clone the client into separate mutable handles:
 
 ```rust
@@ -344,14 +302,3 @@ Clones share the HTTP connection pool. A mutable client borrow only restricts th
 local handle; the server's read/write lock controls access to the shared implementation
 and is held for the duration of the method, including across `.await`.
 
-Generated clients treat the base URL's path as a prefix: both
-`http://localhost/api/v1` and `http://localhost/api/v1/` put a route such as
-`/users/{id}` beneath `/api/v1/users/`. Base URLs must not contain a query
-string or fragment.
-
-Path parameters are literal values, percent-encoded by the client; do not
-pre-encode them. Empty values and the exact values `.` and `..` return an
-error before sending a request. Route attributes must start with a single
-`/` and contain no query strings, fragments, backslashes, whitespace,
-percent escapes, or dot segments. Placeholders must occupy a whole segment
-and name a method parameter.

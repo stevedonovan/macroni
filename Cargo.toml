@@ -1,8 +1,12 @@
 [package]
 name = "macroni"
 description = "Macros for generating Axum handlers from async methods"
+readme = "README.md"
+keywords = ["axum", "http", "api"]
+categories = ["web-programming", "asynchronous", "development-tools::procedural-macro-helpers"]
+repository = "https:://github.com/stevedonovan/macroni"
 license = "MIT"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 autobins = false
 
@@ -41,7 +45,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tokio = { version = "1.0", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 trybuild = "1.0"
 
-[[bench]]
-name = "small_payloads"
-harness = false
-required-features = ["client", "server"]
+#[[bench]]
+#name = "small_payloads"
+#harness = false
+#required-features = ["client", "server"]
