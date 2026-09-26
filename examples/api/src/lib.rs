@@ -16,12 +16,15 @@ pub struct AuthenticatedUser {
 
 #[api]
 pub trait RoleApi {
+    /// Get a specified role by its name
     #[get("/role/{name}")]
     async fn get_by_name(&self, name: String, include_disabled: bool) -> Result<Role>;
 
+    /// Update a role, specifying the name
     #[post("/role/{name}")]
     async fn post_by_name(&self, name: String, role: Role) -> Result<()>;
 
+    /// Delete an existing role
     #[delete("/role/{name}")]
     async fn delete_by_name(&self, name: String, confirmed: bool) -> Result<Role>;
 

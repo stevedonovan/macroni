@@ -151,6 +151,7 @@ struct Parameter {
 
 struct Method {
     name: Ident,
+    docs: Vec<Attribute>,
     verb: Verb,
     path: LitStr,
     parameters: Vec<Parameter>,
@@ -517,6 +518,11 @@ fn parse_method(
 
     Ok(Method {
         name: sig.ident.clone(),
+        docs: attrs
+            .iter()
+            .filter(|attribute| attribute.path().is_ident("doc"))
+            .cloned()
+            .collect(),
         verb,
         path,
         parameters,
@@ -692,6 +698,7 @@ fn generated_type_name(method: &Method, suffix: &str) -> Ident {
 
 fn generate_client_method(method: &Method) -> proc_macro2::TokenStream {
     let name = &method.name;
+    let docs = &method.docs;
     let mutable = method.mutable_receiver.then(|| quote!(mut));
     let result_type = &method.result_type;
     let arguments = method.parameters.iter().map(|parameter| {
@@ -710,6 +717,7 @@ fn generate_client_method(method: &Method) -> proc_macro2::TokenStream {
     let request_body = generate_client_request(method);
 
     quote! {
+        #(#docs)*
         async fn #name(&#mutable self, #(#arguments),*) -> ::macroni::Result<#result_type> {
             #(#ignored_extensions)*
             #request_body
@@ -723,6 +731,7 @@ fn generate_client_convenience_method(
 ) -> Option<proc_macro2::TokenStream> {
     method.parameters.iter().any(|p| p.kind == ParmKind::Extension).then(|| {
         let name = &method.name;
+        let docs = &method.docs;
         let mutable = method.mutable_receiver.then(|| quote!(mut));
         let result_type = &method.result_type;
         let arguments = method
@@ -736,6 +745,7 @@ fn generate_client_convenience_method(
             });
         let request_body = generate_client_request(method);
         quote! {
+            #(#docs)*
             #visibility async fn #name(&#mutable self, #(#arguments),*) -> ::macroni::Result<#result_type> {
                 #request_body
             }
@@ -1102,5 +1112,91 @@ mod path_tests {
                 "{path:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod documentation_tests {
+    use super::*;
+
+    fn attributes(attrs: &[Attribute]) -> Vec<String> {
+        attrs
+            .iter()
+            .map(|attr| attr.to_token_stream().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn method_docs_survive_on_traits_and_both_client_method_forms() {
+        let mut api: ItemTrait = syn::parse_quote! {
+            /// API documentation.
+            pub trait Documented {
+                /// First line.
+                #[get("/value")]
+                #[doc = "Second line."]
+                #[doc(alias = "lookup")]
+                async fn value(&self) -> macroni::Result<String>;
+
+                #[doc = concat!("Extension ", "documentation.")]
+                #[extension(context)]
+                #[doc(hidden)]
+                #[post("/update")]
+                async fn update(&mut self, context: Context) -> macroni::Result<()>;
+            }
+        };
+        let trait_docs = attributes(&api.attrs);
+        let expected: Vec<_> = api
+            .items
+            .iter()
+            .map(|item| {
+                let TraitItem::Fn(method) = item else {
+                    unreachable!()
+                };
+                let docs: Vec<_> = method
+                    .attrs
+                    .iter()
+                    .filter(|attr| attr.path().is_ident("doc"))
+                    .cloned()
+                    .collect();
+                attributes(&docs)
+            })
+            .collect();
+
+        let methods = get_trait_methods(&mut api).unwrap();
+        assert_eq!(attributes(&api.attrs), trait_docs);
+        for ((item, method), expected) in api.items.iter().zip(&methods).zip(&expected) {
+            let TraitItem::Fn(original) = item else {
+                unreachable!()
+            };
+            assert_eq!(&attributes(&original.attrs), expected);
+            let generated: syn::ImplItemFn = syn::parse2(generate_client_method(method)).unwrap();
+            assert_eq!(&attributes(&generated.attrs), expected);
+        }
+
+        let visibility = syn::parse_quote!(pub);
+        assert!(generate_client_convenience_method(&methods[0], &visibility).is_none());
+        let convenience: syn::ImplItemFn =
+            syn::parse2(generate_client_convenience_method(&methods[1], &visibility).unwrap())
+                .unwrap();
+        assert_eq!(attributes(&convenience.attrs), expected[1]);
+    }
+
+    #[test]
+    fn direct_impl_docs_are_preserved() {
+        let mut api: ItemImpl = syn::parse_quote! {
+            impl Service {
+                /// Method documentation.
+                #[get("/value")]
+                pub async fn value(&self) -> macroni::Result<String> {
+                    Ok(String::new())
+                }
+            }
+        };
+        get_impl_methods(&mut api).unwrap();
+        let ImplItem::Fn(method) = &api.items[0] else {
+            unreachable!()
+        };
+        let expected: Attribute = syn::parse_quote!(#[doc = r" Method documentation."]);
+        assert_eq!(attributes(&method.attrs), attributes(&[expected]));
     }
 }
