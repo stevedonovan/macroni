@@ -302,3 +302,105 @@ Clones share the HTTP connection pool. A mutable client borrow only restricts th
 local handle; the server's read/write lock controls access to the shared implementation
 and is held for the duration of the method, including across `.await`.
 
+## Server-sent events
+
+Use `#[sse]` with a GET route to return an owned async stream:
+
+```rust
+#[macroni::api]
+pub trait Updates {
+    #[get("/updates")]
+    #[sse]
+    async fn subscribe(&self) -> macroni::Result<macroni::EventStream<u64>>;
+}
+```
+
+The implementation must return `EventStream::new(stream)`, where `stream` implements
+`Stream<Item = macroni::Result<T>> + Send + 'static`.
+
+Consumers choose whether to continue after an error:
+
+```rust,ignore
+let events = client.subscribe()?;
+while let Some(item) = events.next().await {
+    match item {
+        Ok(event) => handle(event),
+        Err(error) => eprintln!("Subscription reported: {error}"),
+    }
+}
+```
+
+Using `item?` instead stops consumption on the first error. Broadcast
+subscriptions report lag as an error and then resume with retained messages.
+
+SSE event payloads always use JSON without gzip, even if e.g. `msgpack` is enabled.
+Setup errors use ordinary HTTP errors in the selected wire format.
+After setup, a source error becomes a named `macroni-error` event containing
+a JSON object with `status` and `response` fields. Internal errors are redacted.
+The client yields that error as an item and continues reading. The producer
+ends the subscription by returning `None`; to report a fatal source error,
+yield the error and then end.
+
+Browser clients need an explicit listener for application errors if they want to keep subscribing:
+
+```javascript
+eventSource.addEventListener('macroni-error', (event) => {
+    const {status, response} = JSON.parse(event.data);
+    console.error(status, response.code, response.message);
+    // Keep listening; call eventSource.close() only if you choose to stop.
+});
+```
+
+There is no reconnection by *default* (but see later), event replay, or delivery guarantee;
+it is entirely up to the application how to manage subscriptions.
+
+```rust,ignore
+let client = UpdatesClient::builder(address)?
+    .timeout(Duration::from_secs(10)) // Overall deadline for ordinary calls only.
+    .stream_timeout(
+        macroni::StreamTimeout::new()
+            .response_headers(Duration::from_secs(10)) // time until first headers received
+            .idle_timeout(Duration::from_secs(60)), // keepalive
+    )
+    .build()?;
+```
+
+See [the runnable pub/sub example](examples/events/src/main.rs):
+`cargo run -p events`.
+
+For a standalone SSE server, run `cargo run -p subscribe` and connect with
+`curl -N http://localhost:1212/subscribe`. See [the subscribe example](examples/subscribe/src/main.rs).
+
+### Retrying streaming connections
+
+Enable retries explicitly on a generated client's builder (or with
+`ClientConfig::with_stream_retry`):
+
+```rust,ignore
+let client = UpdatesClient::builder(address)?
+    .stream_retry(
+        macroni::StreamRetry::new()
+            .max_retries(3)
+            .backoff(Duration::from_millis(200), Duration::from_secs(30)),
+    )
+    .build()?;
+let mut events = client.subscribe().await?;
+while let Some(item) = events.next().await {
+    match item {
+        Ok(event) => handle(event),
+        Err(error) if error.is_stream_retry_exhausted() => {
+            eprintln!("Subscription exhausted its retry budget: {error}");
+            break;
+        }
+        Err(error) => eprintln!("Subscription reported: {error}"),
+    }
+}
+```
+
+The default policy allows three reconnection attempts over the entire
+subscription, starting at 200ms and capped at 30 seconds.
+
+Reconnection starts a new subscription. No event IDs are replayed and no
+`Last-Event-ID` is sent automatically, so events may be missed or duplicated; as before, policy
+is up to you; you may choose to include an event ID in your payload, and choose to pass it to
+your subscription method.
