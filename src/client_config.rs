@@ -16,6 +16,9 @@ pub struct ClientConfig {
     base_url: Url,
     http: Client,
     max_response_bytes: usize,
+    request_timeout: Option<Duration>,
+    stream_timeout: crate::StreamTimeout,
+    stream_retry: Option<crate::StreamRetry>,
 }
 
 impl ClientConfig {
@@ -46,6 +49,9 @@ impl ClientConfig {
             base_url,
             http,
             max_response_bytes: DEFAULT_RESPONSE_BODY_LIMIT,
+            request_timeout: None,
+            stream_timeout: crate::StreamTimeout::default(),
+            stream_retry: None,
         })
     }
 
@@ -80,6 +86,36 @@ impl ClientConfig {
         Ok(url)
     }
 
+    /// Apply the overall deadline for an ordinary, finite response.
+    #[doc(hidden)]
+    pub fn prepare_request(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self.request_timeout {
+            Some(timeout) => request.timeout(timeout),
+            None => request,
+        }
+    }
+
+    /// Timeout policy used by streaming requests.
+    pub fn stream_timeout(&self) -> crate::StreamTimeout {
+        self.stream_timeout
+    }
+
+    /// Override streaming timeouts, including when using a custom HTTP client.
+    pub fn with_stream_timeout(mut self, timeout: crate::StreamTimeout) -> Self {
+        self.stream_timeout = timeout;
+        self
+    }
+
+    /// Optional policy for reconnecting established streaming subscriptions.
+    pub fn stream_retry(&self) -> Option<crate::StreamRetry> {
+        self.stream_retry
+    }
+
+    pub fn with_stream_retry(mut self, retry: crate::StreamRetry) -> Self {
+        self.stream_retry = Some(retry);
+        self
+    }
+
     /// The shared HTTP client and connection pool.
     pub fn http_client(&self) -> &Client {
         &self.http
@@ -107,15 +143,16 @@ pub struct ClientConfigBuilder<C = ClientConfig> {
     http: reqwest::ClientBuilder,
     default_headers: HeaderMap,
     max_response_bytes: usize,
+    request_timeout: Option<Duration>,
+    stream_timeout: crate::StreamTimeout,
+    stream_retry: Option<crate::StreamRetry>,
     client: PhantomData<fn() -> C>,
 }
 
 impl<C> ClientConfigBuilder<C> {
     pub fn new(address: impl AsRef<str>) -> Result<Self> {
         let (base_url, socket) = parse_url(address.as_ref())?;
-        let mut http = Client::builder()
-            .timeout(Duration::from_secs(10))
-            .connect_timeout(Duration::from_secs(2));
+        let mut http = Client::builder().connect_timeout(Duration::from_secs(2));
         if let Some(socket) = socket {
             http = http.unix_socket(socket);
         }
@@ -124,12 +161,28 @@ impl<C> ClientConfigBuilder<C> {
             http,
             default_headers: HeaderMap::new(),
             max_response_bytes: DEFAULT_RESPONSE_BODY_LIMIT,
+            request_timeout: Some(Duration::from_secs(10)),
+            stream_timeout: crate::StreamTimeout::default(),
+            stream_retry: None,
             client: PhantomData,
         })
     }
 
+    /// Overall deadline for ordinary requests; does not limit SSE lifetime.
     pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.http = self.http.timeout(timeout);
+        self.request_timeout = Some(timeout);
+        self
+    }
+
+    /// Configure SSE setup and idle timeouts independently of ordinary requests.
+    pub fn stream_timeout(mut self, timeout: crate::StreamTimeout) -> Self {
+        self.stream_timeout = timeout;
+        self
+    }
+
+    /// Enable bounded, consumer-driven reconnection after stream transport failures.
+    pub fn stream_retry(mut self, retry: crate::StreamRetry) -> Self {
+        self.stream_retry = Some(retry);
         self
     }
 
@@ -176,6 +229,9 @@ impl<C> ClientConfigBuilder<C> {
             base_url: self.base_url,
             http,
             max_response_bytes: self.max_response_bytes,
+            request_timeout: self.request_timeout,
+            stream_timeout: self.stream_timeout,
+            stream_retry: self.stream_retry,
         }))
     }
 }

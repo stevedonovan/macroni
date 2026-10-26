@@ -157,6 +157,7 @@ struct Method {
     parameters: Vec<Parameter>,
     result_type: Type,
     mutable_receiver: bool,
+    sse: bool,
 }
 
 fn expand(
@@ -431,6 +432,27 @@ fn parse_method(
     }
 
     let (verb, path) = take_route_attribute(attrs)?;
+    let mut sse = false;
+    let mut sse_error = None;
+    attrs.retain(|attr| {
+        if !attr.path().is_ident("sse") {
+            return true;
+        }
+        if sse || !matches!(attr.meta, syn::Meta::Path(_)) {
+            sse_error = Some(syn::Error::new(
+                attr.span(),
+                "expected a single #[sse] attribute",
+            ));
+        }
+        sse = true;
+        false
+    });
+    if let Some(error) = sse_error {
+        return Err(error);
+    }
+    if sse && !matches!(verb, Verb::Get) {
+        return Err(syn::Error::new(path.span(), "#[sse] requires a GET route"));
+    }
     let extension_names = take_simple_attributes(attrs, "extension")?;
     // there can only be one body struct
     let body_name = take_simple_attributes(attrs, "body")?;
@@ -528,6 +550,7 @@ fn parse_method(
         parameters,
         result_type,
         mutable_receiver,
+        sse,
     })
 }
 
@@ -830,17 +853,28 @@ fn generate_client_request(method: &Method) -> proc_macro2::TokenStream {
     };
     let path = &method.path;
 
-    quote! {
-            let url = self.config.request_url(#path, &[#(#path_parameters),*])?;
-            let request = #request.header(
+    let send = if method.sse {
+        quote! {
+            ::macroni::__private::open_stream(
+                #request, self.config.stream_timeout(), self.config.response_body_limit(),
+                self.config.stream_retry(),
+            ).await
+        }
+    } else {
+        quote! {
+            let request = self.config.prepare_request(#request).header(
                 ::macroni::__private::reqwest::header::ACCEPT,
                 ::macroni::__private::CONTENT_TYPE,
             );
             let response = request.send().await.map_err(::macroni::Error::from)?;
             ::macroni::__private::decode_response::<#result_type>(
-                response,
-                self.config.response_body_limit(),
+                response, self.config.response_body_limit(),
             ).await
+        }
+    };
+    quote! {
+        let url = self.config.request_url(#path, &[#(#path_parameters),*])?;
+        #send
     }
 }
 
@@ -964,6 +998,17 @@ fn generate_handler(
         )
     };
 
+    let response_type = if method.sse {
+        quote!(impl #axum::response::IntoResponse)
+    } else {
+        quote!(::macroni::__private::Payload<#result_type>)
+    };
+    let response = if method.sse {
+        quote!(::macroni::__private::sse_response(result))
+    } else {
+        quote!(::macroni::__private::Payload(result))
+    };
+
     let handler = if was_impl {
         // server-only handler implemented directly on the impl block
         quote! {
@@ -973,10 +1018,10 @@ fn generate_handler(
                 #path_extractor
                 #(#extension_extractors)*
                 #payload_extractor
-            ) -> ::macroni::Result<::macroni::__private::Payload<#result_type>>
+            ) -> ::macroni::Result<#response_type>
             {
                 let result = #accessor.#method_name(#(#call_arguments),*).await?;
-                Ok(::macroni::__private::Payload(result))
+                Ok(#response)
             }
         }
     } else {
@@ -988,13 +1033,13 @@ fn generate_handler(
             #path_extractor
             #(#extension_extractors)*
             #payload_extractor
-        ) -> ::macroni::Result<::macroni::__private::Payload<#result_type>>
+        ) -> ::macroni::Result<#response_type>
             where
                 T: super::#trait_name + Send + Sync + 'static,
         {
             use super::#trait_name as _;
             let result = #accessor.#method_name(#(#call_arguments),*).await?;
-            Ok(::macroni::__private::Payload(result))
+            Ok(#response)
         }
 
         }
@@ -1198,5 +1243,41 @@ mod documentation_tests {
         };
         let expected: Attribute = syn::parse_quote!(#[doc = r" Method documentation."]);
         assert_eq!(attributes(&method.attrs), attributes(&[expected]));
+    }
+}
+
+#[cfg(test)]
+mod sse_tests {
+    use super::*;
+
+    #[test]
+    fn sse_attribute_is_explicit_and_get_only() {
+        for attributes in [
+            quote!(#[sse] #[post("/events")]),
+            quote!(#[sse] #[sse] #[get("/events")]),
+            quote!(#[sse(heartbeat = 10)] #[get("/events")]),
+        ] {
+            let mut item: ItemTrait = syn::parse_quote! {
+                pub trait Api {
+                    #attributes
+                    async fn events(&self) -> Result<SomeStream>;
+                }
+            };
+            assert!(get_trait_methods(&mut item).is_err());
+        }
+        // The return type can be an alias; selection never depends on its name.
+        let mut item: ItemTrait = syn::parse_quote! {
+            pub trait Api {
+                #[sse]
+                #[get("/events")]
+                async fn events(&self) -> Result<MyAlias>;
+            }
+        };
+        let methods = get_trait_methods(&mut item).unwrap();
+        assert!(methods[0].sse);
+        let TraitItem::Fn(method) = &item.items[0] else {
+            unreachable!()
+        };
+        assert!(method.attrs.is_empty());
     }
 }

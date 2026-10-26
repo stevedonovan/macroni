@@ -8,6 +8,7 @@ struct Implementation {
 
 #[macroni::api]
 impl Implementation {
+    #[tracing::instrument(skip(self))]
     #[get("/hello")]
     pub async fn hello(&self, name: String, age: u32) -> Result<String> {
         Ok(format!(
@@ -30,6 +31,12 @@ impl Implementation {
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "hello=debug,tower_http=info".into()),
+        )
+        .init();
     let server = ImplementationServer::router(Implementation {
         id: "Admin".to_owned(),
     });

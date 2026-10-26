@@ -95,6 +95,13 @@ mod client_config;
 #[cfg(any(feature = "client", feature = "server"))]
 mod codec;
 mod error;
+mod event_stream;
+pub use event_stream::{EventStream, StreamTimeout};
+#[cfg(feature = "client")]
+mod stream_retry;
+pub use futures_util::{Stream, StreamExt};
+#[cfg(feature = "client")]
+pub use stream_retry::{StreamRetry, StreamRetryExhausted};
 #[cfg(feature = "server")]
 mod extract;
 #[cfg(feature = "server")]
@@ -244,7 +251,11 @@ pub mod __private {
     #[cfg(any(feature = "client", feature = "server"))]
     pub use crate::codec::CONTENT_TYPE;
     #[cfg(feature = "server")]
+    pub use crate::event_stream::sse_response;
+    #[cfg(feature = "server")]
     pub use crate::extract::{Path, Payload, Query};
+    #[cfg(feature = "client")]
+    pub use crate::stream_retry::open_stream;
 
     #[cfg(feature = "client")]
     pub fn encode_path_segment(value: &str) -> String {

@@ -16,16 +16,22 @@ members = [
     "examples/api",
     "examples/client",
     "examples/server", "examples/hello", "examples/direct",
+    "examples/events",
+    "examples/subscribe",
 ]
 
 [features]
 default = ["client", "server"]
-client = ["dep:percent-encoding", "dep:reqwest"]
+client = ["dep:percent-encoding", "dep:reqwest", "dep:tokio", "dep:bytes", "dep:sse-core", "dep:hyper"]
 server = ["dep:axum", "dep:axum-serde", "dep:tokio", "dep:tracing", "dep:tower-http"]
 gzip = ["tower-http?/compression-gzip", "reqwest?/gzip"]
 msgpack = ["dep:rmp-serde", "axum-serde?/msgpack"]
 
 [dependencies]
+hyper = { version = "1", optional = true, default-features = false }
+sse-core = { version = "0.2.3", optional = true, default-features = false, features = ["std", "fastrand"] }
+bytes = { version = "1", optional = true }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 axum = { version = "0.8", optional = true }
 axum-serde = { version = "0.10", optional = true, default-features = false }
 http = "1"

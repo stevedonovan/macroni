@@ -102,6 +102,8 @@ impl RoleApi for RoleService {
         Ok(true)
     }
 
+    // #[tracing::instrument(skip(self))]
+
     async fn slow(&self, _id: String) -> Result<String> {
         tokio::select! {
             maybe_msg = rx_recv(&self.receiver) => {

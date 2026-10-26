@@ -128,6 +128,13 @@ impl Error {
         matches!(self, Self::User {status,..} if *status == StatusCode::REQUEST_TIMEOUT)
     }
 
+    /// The established streaming subscription consumed its reconnection budget.
+    #[cfg(feature = "client")]
+    pub fn is_stream_retry_exhausted(&self) -> bool {
+        matches!(self, Self::Transport { source, .. }
+            if source.is::<crate::StreamRetryExhausted>())
+    }
+
     pub fn is_transport(&self) -> bool {
         matches!(self, Self::Transport { .. })
     }
