@@ -158,6 +158,7 @@ struct Method {
     result_type: Type,
     mutable_receiver: bool,
     sse: bool,
+    stream_body: bool,
 }
 
 fn expand(
@@ -453,6 +454,30 @@ fn parse_method(
     if sse && !matches!(verb, Verb::Get) {
         return Err(syn::Error::new(path.span(), "#[sse] requires a GET route"));
     }
+    let mut stream_body = false;
+    let mut stream_error = None;
+    attrs.retain(|attr| {
+        if !attr.path().is_ident("stream_body") {
+            return true;
+        }
+        if stream_body || !matches!(attr.meta, syn::Meta::Path(_)) {
+            stream_error = Some(syn::Error::new(
+                attr.span(),
+                "expected a single #[stream_body]",
+            ));
+        }
+        stream_body = true;
+        false
+    });
+    if let Some(error) = stream_error {
+        return Err(error);
+    }
+    if stream_body && !matches!(verb, Verb::Post | Verb::Put | Verb::Patch) {
+        return Err(syn::Error::new(
+            path.span(),
+            "#[stream_body] requires POST, PUT, or PATCH",
+        ));
+    }
     let extension_names = take_simple_attributes(attrs, "extension")?;
     // there can only be one body struct
     let body_name = take_simple_attributes(attrs, "body")?;
@@ -526,6 +551,20 @@ fn parse_method(
     check_matching(&extension_names, sig.ident.span(), "extension")?;
     check_matching(&body_name, sig.ident.span(), "body")?;
 
+    if stream_body {
+        let body_parameters: Vec<_> = parameters
+            .iter_mut()
+            .filter(|p| p.kind.non_path())
+            .collect();
+        if body_parameters.len() != 1 || !body_name.is_empty() {
+            return Err(syn::Error::new(
+                sig.span(),
+                "#[stream_body] requires exactly one body parameter and cannot be combined with #[body]",
+            ));
+        }
+        body_parameters.into_iter().next().unwrap().kind = ParmKind::Struct;
+    }
+
     let result_type = result_type(&sig.output)?;
     let ReturnType::Type(_, declared_output) = &sig.output else {
         unreachable!("result_type validated the return type")
@@ -551,6 +590,7 @@ fn parse_method(
         result_type,
         mutable_receiver,
         sse,
+        stream_body,
     })
 }
 
@@ -853,7 +893,20 @@ fn generate_client_request(method: &Method) -> proc_macro2::TokenStream {
     };
     let path = &method.path;
 
-    let send = if method.sse {
+    let send = if method.stream_body {
+        let parameter = &non_path[0].name;
+        let verb = match method.verb {
+            Verb::Post => quote!(post),
+            Verb::Put => quote!(put),
+            Verb::Patch => quote!(patch),
+            _ => unreachable!(),
+        };
+        quote! {
+            ::macroni::__private::send_upload(
+                self.config.http_client().#verb(url), #parameter, &self.config,
+            ).await
+        }
+    } else if method.sse {
         quote! {
             ::macroni::__private::open_stream(
                 #request, self.config.stream_timeout(), self.config.response_body_limit(),
@@ -948,7 +1001,9 @@ fn generate_handler(
         quote!()
     } else {
         let names = non_path.iter().map(|parameter| &parameter.name);
-        let extractor = if method.verb.uses_query() {
+        let extractor = if method.stream_body {
+            "StreamingBody"
+        } else if method.verb.uses_query() {
             "Query"
         } else {
             "Payload"
@@ -1279,5 +1334,33 @@ mod sse_tests {
             unreachable!()
         };
         assert!(method.attrs.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod stream_body_tests {
+    use super::*;
+    #[test]
+    fn streaming_body_requires_one_payload_and_a_body_verb() {
+        for item in [
+            quote! { #[get("/")] #[stream_body] async fn send(&self, items: Stream) -> Result<()>; },
+            quote! { #[post("/")] #[stream_body] async fn send(&self) -> Result<()>; },
+            quote! { #[post("/")] #[stream_body] async fn send(&self, items: Stream, other: u32) -> Result<()>; },
+            quote! { #[post("/")] #[stream_body] #[body(items)] async fn send(&self, items: Stream) -> Result<()>; },
+            quote! { #[post("/")] #[stream_body] #[stream_body] async fn send(&self, items: Stream) -> Result<()>; },
+        ] {
+            let mut api: ItemTrait = syn::parse_quote! { pub trait Api { #item } };
+            assert!(get_trait_methods(&mut api).is_err());
+        }
+        let mut api: ItemTrait = syn::parse_quote! {
+            pub trait Api {
+                #[patch("/{id}")]
+                #[stream_body]
+                #[extension(context)]
+                async fn send(&mut self, id: u32, context: Context, items: Alias) -> Result<()>;
+            }
+        };
+        let methods = get_trait_methods(&mut api).unwrap();
+        assert!(methods[0].stream_body);
     }
 }

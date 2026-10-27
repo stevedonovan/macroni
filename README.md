@@ -14,8 +14,8 @@ It provides proc macro sugar for generating `Axum` handlers from trait methods o
 and sets up `Axum` extractors for you. It provides a suitable error type, and
 implements custom extractors that use that type, so that errors are formatted as JSON.
 
-However, the resulting generated routers are from `Axum` and
-can use the whole ecosystem:
+However, the resulting generated routers are from `Axum` and you
+can use the whole ecosystem with them:
 
 ```rust
 use macroni::Result;
@@ -52,7 +52,7 @@ impl Implementation {
 async fn main() {
     let server = ImplementationServer::router(Implementation {
         id: "Admin".to_owned(),
-    });
+    }); // this is an Axum router and you can add layers, middleware, etc
 
     let address = std::env::var("HELLO_ADDR").unwrap_or_else(|_| "127.0.0.1:3030".into());
     let listener = tokio::net::TcpListener::bind(&address)
@@ -71,7 +71,9 @@ methods. The arguments of a shared type (like query in case of GET and body in c
 generated structs.
 The routes themselves are specified as macro attributes, as with the `Rocket` framework.
 
-Note how in this case `&self` implicitly becomes `Arc<Implementation>`.
+Note how in this case `&self` implicitly becomes `Arc<RwLock<Implementation>>` - if all the methods are immutable,
+`&self`
+is just `Arc<Implementation>`
 
 Some conventions are followed when generating the actual `Axum` handlers. For GET handlers, if a
 parameter is not explicitly from the path, then it comes from the query. Similarly, for a POST handler,
@@ -127,10 +129,12 @@ async fn post_by_name(State(this): State<Arc<MyState>>, Json(role): Json<Role>) 
 
 Note how the implementing struct automatically becomes state for all these routes.
 
+(You *could* declare `post_by_name` with a `&mut self` receiver, and then the `Mutex` is unneeded.)
+
 Generated clients validate their base URL and use finite defaults: a two-second connection timeout,
 a ten-second total request timeout, and an eight-MiB response limit. All can be configured:
 
-```rust
+```rust,ignore
 let client = MyApiClient::builder("http://localhost:3000") ?
 .connect_timeout(Duration::from_secs(1))
 .timeout(Duration::from_secs(5))
@@ -159,7 +163,7 @@ macroni = { path = "../..", default-features = false, features = ["server"] }
 role-api = { path = "../api", features = ["server"] }
 tokio = { version = "1.0", features = ["macros", "net", "rt-multi-thread", "signal"] }
 tower-http = { version = "0.6", features = ["request-id", "trace"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }```
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ```
 
 Note how the shared trait is in a shared crate `role-api`. (The last two dependencies are optional)
@@ -174,7 +178,7 @@ pub trait RoleApi {
 A client enables only the contract's `client` feature, while a server enables only `server`.
 
 Without feature flags, using `#[api(client)]` creates only the client, and `#[api(client,server)]` implements both.
-In the case where `api` is applied to an `impl` block directly, it is always just server.
+In the case where `api` is applied to an `impl` block directly, it is always just `server`.
 
 The server example deliberately composes the generated router with ordinary `Axum` and `Tower`
 middleware. It demonstrates structured request tracing, request IDs, a JSON-producing timeout,
@@ -194,7 +198,7 @@ codes are preserved even when the remote error envelope is malformed.
 
 Use `clients!` to group APIs behind named fields, mirroring merged server routers:
 
-```rust
+```rust,ignore
 use my_api::{Hello, HelloClient, User, UserClient};
 
 macroni::clients! {
@@ -262,15 +266,6 @@ Under the hood, the main change is to replace our `Json` extractor with a `Paylo
 which is either defined for JSON or `msgpack`. This makes it very straightforward to implement
 other wire formats based on feature flags.
 
-## Comparing JSON and MessagePack performance
-
-Run `python3 scripts/bench-formats.py` to compare small payloads using optimized
-builds of the generated client and server. It measures encoded body sizes,
-serialization cost, HTTP throughput, and latency at concurrency 1 and 16, with
-repeated samples and gzip disabled. Add `--transports tcp uds` to compare localhost
-TCP with Unix domain sockets for both formats. See the [benchmark guide](benches/README.md)
-for the workload, configuration, and interpretation of results.
-
 ## Other Method Attributes
 
 A method can have a `#[extension(name)]` attribute, where `name` is one of the parameters.
@@ -280,7 +275,7 @@ typed extension value.
 It is of course completely possible to generate _just_ a client implementation from a trait - see the
 `direct` example. If we are matching an external API then it's necessary to match the shape of any JSON
 bodies. For example, `fn hello_post(&self, arg: Args)` will by default generate a wrapper struct around
-the single `arg` - at the code generation point, we really don't know if `Arg` is a struct not
+the single `arg` - at the point of code generation, we really don't know if `Arg` is a struct not
 requiring wrapping. The attribute `#[body(arg)]` indicates that we don't want a wrapper.
 
 ## Mutable Receivers
@@ -292,7 +287,7 @@ any method with a mutable receiver will get write access, otherwise read access.
 Generated clients preserve the trait's receivers, so calling a mutable method therefore requires a mutable
 client binding. For concurrent calls, clone the client into separate mutable handles:
 
-```rust
+```rust,ignore
 let mut first = client.clone();
 let mut second = client.clone();
 tokio::try_join!(first.update(a), second.update(b))?;
@@ -303,6 +298,10 @@ local handle; the server's read/write lock controls access to the shared impleme
 and is held for the duration of the method, including across `.await`.
 
 ## Server-sent events
+
+Async *streams* are very common in Rust application code. `macroni` allows methods to return and *consume*
+async streams, which is useful for pub/sub approaches to API design. These are implemented by the HTTP protocols
+server-side events and request chunking, and can only be used with plain JSON text as transport.
 
 Use `#[sse]` with a GET route to return an owned async stream:
 
@@ -321,7 +320,7 @@ The implementation must return `EventStream::new(stream)`, where `stream` implem
 Consumers choose whether to continue after an error:
 
 ```rust,ignore
-let events = client.subscribe()?;
+let mut events = client.subscribe()?;
 while let Some(item) = events.next().await {
     match item {
         Ok(event) => handle(event),
@@ -404,3 +403,110 @@ Reconnection starts a new subscription. No event IDs are replayed and no
 `Last-Event-ID` is sent automatically, so events may be missed or duplicated; as before, policy
 is up to you; you may choose to include an event ID in your payload, and choose to pass it to
 your subscription method.
+
+## Streaming request bodies
+
+Use `#[stream_body]` on a POST, PUT, or PATCH method whose sole body argument
+is an owned `EventStream<T>`:
+
+```rust,ignore
+#[macroni::api]
+pub trait Import {
+    #[post("/import/{batch}")]
+    #[stream_body]
+    async fn import(
+        &self,
+        batch: String,
+        items: macroni::EventStream<Record>,
+    ) -> macroni::Result<ImportSummary>;
+}
+```
+
+Path parameters and extensions can accompany the stream.
+The handler consumes items on demand and returns an ordinary response.
+
+The usual state-lock behavior applies for mutable methods, so be careful with a long-lived
+input stream.
+
+Uploads use `application/x-ndjson` and UTF-8 JSON even with `msgpack` enabled.
+Every record ends in LF or CRLF; HTTP chunk boundaries are irrelevant. The JSON records
+encode `Result<T>` like this (the "heartbeat" type just keeps the connection alive and is discarded.)
+
+```
+{ "type": "data", "data": { "name": "first" }}
+{ "type": "error", "error": {"code": "source_busy","message": "An intermittent source error"}}
+{ "type": "heartbeat" }
+```
+
+On the Rust client side, the call is like this:
+
+```rust,ignore
+        let items = futures_util::stream::iter([
+            Ok(json!{"name":"first"}),
+            Err(macroni::Error::bad_request(
+                "source_busy",
+                "An intermittent source error",
+            )),
+        ]);
+        let result = client.import("demo".into(), EventStream::new(items)).await;
+```
+
+Can match the protocol directly using this generator function with NodeJS's `fetch` API:
+
+```js
+async function* records() {
+    yield line({type: 'data', data: 'first'});
+
+    await sleep(1000, undefined, {signal});
+    yield line({type: 'heartbeat'});
+
+    yield line({
+        type: 'error',
+        error: {
+            code: 'source_busy',
+            message: 'An intermittent source error',
+        },
+    });
+
+    await sleep(1000, undefined, {signal});
+    // Returning completes the request body.
+}
+
+```
+
+When implementing the method, data yields `Ok`; source errors yield `Err` and allow further records.
+Error records contain the existing `ErrorResponse` fields, without an HTTP
+status; the receiving handler sees them as user errors with status 400.
+Serialization failures abort the upload. Clean body completion ends the input.
+
+Configuring the two ends:
+
+```rust,ignore
+let client = ImportClient::builder(address)?
+    .stream_body(
+        macroni::StreamBodyConfig::new()
+            .max_record_bytes(1024 * 1024)
+            .heartbeat_interval(Duration::from_secs(15))
+            .overall_timeout(Duration::from_secs(300)),
+    )
+    .build()?;
+
+let router = ImportServer::router(service).layer(macroni::axum::Extension(
+    macroni::StreamBodyConfig::new()
+        .max_record_bytes(1024 * 1024) // default one Mb record limit
+        .idle_timeout(Duration::from_secs(60))
+        .overall_timeout(Duration::from_secs(300)),
+//));
+```
+
+Streaming uploads bypass the ordinary client's total request timeout.
+The connect timeout still applies. After the upload finishes, the configured
+`StreamTimeout::response_headers` bounds waiting for the response headers;
+it also bounds reading the finite response body. A custom Reqwest client's
+own deadlines still apply. The response uses the normal selected wire codec.
+
+Streamed uploads are never automatically retried, even when SSE retries are
+enabled. Processing acknowledgements, replay, source overflow policy, and
+transactional handling of partial uploads belong to the application.
+
+Run `cargo run -p upload` for [a complete example](examples/upload/src/main.rs).

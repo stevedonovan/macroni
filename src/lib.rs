@@ -96,7 +96,11 @@ mod client_config;
 mod codec;
 mod error;
 mod event_stream;
+#[cfg(any(feature = "client", feature = "server"))]
+mod headers;
+mod stream_body;
 pub use event_stream::{EventStream, StreamTimeout};
+pub use stream_body::StreamBodyConfig;
 #[cfg(feature = "client")]
 mod stream_retry;
 pub use futures_util::{Stream, StreamExt};
@@ -254,6 +258,10 @@ pub mod __private {
     pub use crate::event_stream::sse_response;
     #[cfg(feature = "server")]
     pub use crate::extract::{Path, Payload, Query};
+    #[cfg(feature = "server")]
+    pub use crate::stream_body::StreamingBody;
+    #[cfg(feature = "client")]
+    pub use crate::stream_body::send_upload;
     #[cfg(feature = "client")]
     pub use crate::stream_retry::open_stream;
 

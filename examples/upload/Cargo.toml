@@ -1,0 +1,9 @@
+[package]
+name = "upload"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+macroni = { path = "../..", default-features = false, features = ["client", "server"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }

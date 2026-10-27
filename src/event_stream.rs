@@ -71,7 +71,13 @@ where
         });
         Self::new(stream)
     }
+}
 
+impl<T> EventStream<T>
+where
+    T: Clone + Send + 'static,
+{
+    /// Create an EventStream from a channel receiver
     pub fn new_from_channel(rx: mpsc::Receiver<Result<T>>) -> Self {
         let stream = futures_util::stream::unfold(rx, |mut rx| async move {
             match rx.recv().await {
@@ -199,7 +205,7 @@ pub async fn open_stream<T: serde::de::DeserializeOwned + 'static>(
     timeout: StreamTimeout,
     limit: usize,
 ) -> Result<EventStream<T>> {
-    use http::header::{ACCEPT, CONTENT_TYPE};
+    use http::header::ACCEPT;
     // We time out if the request hasn't arrived by `response_headers` duration
     let response = tokio::time::timeout(
         timeout.response_headers,
@@ -225,19 +231,7 @@ pub async fn open_stream<T: serde::de::DeserializeOwned + 'static>(
             )),
         };
     }
-    let valid = response
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value
-                .split(';')
-                .next()
-                .unwrap_or("")
-                .trim()
-                .eq_ignore_ascii_case("text/event-stream")
-        });
-    if !valid {
+    if !crate::headers::has_content_type(response.headers(), "text/event-stream") {
         return Err(Error::protocol(
             Some(response.status()),
             "response Content-Type is not text/event-stream",

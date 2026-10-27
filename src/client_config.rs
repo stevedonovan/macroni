@@ -19,6 +19,7 @@ pub struct ClientConfig {
     request_timeout: Option<Duration>,
     stream_timeout: crate::StreamTimeout,
     stream_retry: Option<crate::StreamRetry>,
+    stream_body: crate::StreamBodyConfig,
 }
 
 impl ClientConfig {
@@ -52,6 +53,7 @@ impl ClientConfig {
             request_timeout: None,
             stream_timeout: crate::StreamTimeout::default(),
             stream_retry: None,
+            stream_body: crate::StreamBodyConfig::default(),
         })
     }
 
@@ -116,6 +118,14 @@ impl ClientConfig {
         self
     }
 
+    pub fn stream_body(&self) -> crate::StreamBodyConfig {
+        self.stream_body
+    }
+    pub fn with_stream_body(mut self, config: crate::StreamBodyConfig) -> Self {
+        self.stream_body = config;
+        self
+    }
+
     /// The shared HTTP client and connection pool.
     pub fn http_client(&self) -> &Client {
         &self.http
@@ -146,6 +156,7 @@ pub struct ClientConfigBuilder<C = ClientConfig> {
     request_timeout: Option<Duration>,
     stream_timeout: crate::StreamTimeout,
     stream_retry: Option<crate::StreamRetry>,
+    stream_body: crate::StreamBodyConfig,
     client: PhantomData<fn() -> C>,
 }
 
@@ -164,6 +175,7 @@ impl<C> ClientConfigBuilder<C> {
             request_timeout: Some(Duration::from_secs(10)),
             stream_timeout: crate::StreamTimeout::default(),
             stream_retry: None,
+            stream_body: crate::StreamBodyConfig::default(),
             client: PhantomData,
         })
     }
@@ -183,6 +195,12 @@ impl<C> ClientConfigBuilder<C> {
     /// Enable bounded, consumer-driven reconnection after stream transport failures.
     pub fn stream_retry(mut self, retry: crate::StreamRetry) -> Self {
         self.stream_retry = Some(retry);
+        self
+    }
+
+    /// Configure streamed request bodies independently of ordinary request deadlines.
+    pub fn stream_body(mut self, config: crate::StreamBodyConfig) -> Self {
+        self.stream_body = config;
         self
     }
 
@@ -232,6 +250,7 @@ impl<C> ClientConfigBuilder<C> {
             request_timeout: self.request_timeout,
             stream_timeout: self.stream_timeout,
             stream_retry: self.stream_retry,
+            stream_body: self.stream_body,
         }))
     }
 }
